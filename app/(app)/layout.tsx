@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
 import ProfileBubble from "../components/profileBubble";
@@ -35,7 +36,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Optionnel : si tu veux cacher la bottom nav sur certaines pages plus tard
   const hideBottomNav =
     pathname.startsWith("/login") || pathname.startsWith("/auth");
 
@@ -44,7 +44,27 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Top bar */}
       <header className="sticky top-0 z-20 bg-[var(--hr-surface)]/90 backdrop-blur border-b border-[var(--hr-sand)]">
         <div className="px-4 py-3 flex items-center justify-between">
-          <div className="font-semibold">App Resto</div>
+          {/* ✅ Logo + nom */}
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-9 h-9 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] shadow-sm overflow-hidden flex items-center justify-center shrink-0">
+              <Image
+                src="/logo.png"
+                alt="Logo"
+                width={36}
+                height={36}
+                className="w-9 h-9 object-cover"
+                priority
+              />
+            </div>
+
+            <div className="min-w-0">
+              <div className="font-semibold leading-tight truncate">FamilleMB</div>
+              <div className="text-xs text-[var(--hr-muted)] leading-tight truncate">
+                Carnet de restos
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2">
             <ProfileBubble />
           </div>
@@ -56,8 +76,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
 
-
-      {/* Bottom nav (native feel) */}
       {!hideBottomNav && <BottomNav />}
     </div>
   );

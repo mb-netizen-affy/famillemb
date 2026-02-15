@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 import RestaurantCard from "../../components/RestaurantCard";
 import RestaurantCardSkeleton from "../../components/RestaurantCardSkeleton";
@@ -17,20 +18,37 @@ type VisitRow = {
   visited_at: string;
 };
 
+function formatDateFR(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatPriceEUR(v: number | null) {
+  if (v == null) return "—";
+  // format simple, stable
+  const n = Math.round(v * 10) / 10;
+  return `€${n}`;
+}
+
 export default function RestaurantsPage() {
+  const router = useRouter();
   const initOnceRef = useRef(false);
+  const toastTimerRef = useRef<number | null>(null);
+
+  const [userId, setUserId] = useState<string | null>(null);
 
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [visits, setVisits] = useState<VisitRow[]>([]);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const [visitsLoaded, setVisitsLoaded] = useState(false);
   const [visitsSheet, setVisitsSheet] = useState<{ id: string; name: string } | null>(null);
 
   const [search, setSearch] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("recent");
 
   const [toast, setToast] = useState<string | null>(null);
+
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteName, setConfirmDeleteName] = useState<string>("");
 
@@ -40,42 +58,41 @@ export default function RestaurantsPage() {
   const [savingVisit, setSavingVisit] = useState(false);
 
   const [confirmVisitDelete, setConfirmVisitDelete] = useState<{
-  id: string;
-  label: string; // ex: "12 janv. 2026 · €25"
-} | null>(null);
-
+    id: string;
+    label: string; // ex: "12 janv. 2026 · €25"
+  } | null>(null);
 
   const pushToast = (msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(null), 2000);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2000);
   };
 
-  const fetchRestaurants = async () => {
+  const fetchRestaurants = async (uid: string) => {
     const { data, error } = await supabase
       .from("restaurants")
       .select("id,name,city,rating,tags,country,created_at,place_id,price_eur")
+      .eq("user_id", uid)
       .order("created_at", { ascending: false });
 
     if (error) {
       console.error("Erreur fetch restaurants:", error.message);
       return;
     }
-
     setRestaurants((data ?? []) as any);
   };
 
-  const fetchVisits = async () => {
+  const fetchVisits = async (uid: string) => {
     const { data, error } = await supabase
       .from("restaurant_visits")
-      .select("id,restaurant_id,price_eur,visited_at");
+      .select("id,restaurant_id,price_eur,visited_at")
+      .eq("user_id", uid);
 
     if (error) {
       console.error("Erreur fetch visits:", error.message);
       return;
     }
-
     setVisits((data ?? []) as VisitRow[]);
-    setVisitsLoaded(true);
   };
 
   useEffect(() => {
@@ -83,26 +100,42 @@ export default function RestaurantsPage() {
     initOnceRef.current = true;
 
     const init = async () => {
+      setLoading(true);
+
       const { data } = await supabase.auth.getUser();
-      if (!data.user) {
-        window.location.href = "/login";
+      const user = data.user;
+
+      if (!user) {
+        router.replace("/login");
         return;
       }
 
-      await Promise.all([fetchRestaurants(), fetchVisits()]);
-      setHasLoaded(true);
+      setUserId(user.id);
+
+      await Promise.all([fetchRestaurants(user.id), fetchVisits(user.id)]);
+      setLoading(false);
     };
 
     init();
 
-    const onChanged = () => fetchVisits();
+    // quand tu modifies/supprimes/ajoutes des visites ailleurs
+    const onChanged = async () => {
+      if (!userId) return;
+      await fetchVisits(userId);
+    };
     window.addEventListener("visits:changed", onChanged);
-    return () => window.removeEventListener("visits:changed", onChanged);
+
+    return () => {
+      window.removeEventListener("visits:changed", onChanged);
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [router, userId]);
 
   const deleteRestaurant = async (id: string) => {
-    const { error } = await supabase.from("restaurants").delete().eq("id", id);
+    if (!userId) return;
+
+    const { error } = await supabase.from("restaurants").delete().eq("id", id).eq("user_id", userId);
 
     if (error) {
       console.error("Erreur delete:", error.message);
@@ -110,17 +143,20 @@ export default function RestaurantsPage() {
       return;
     }
 
-    await Promise.all([fetchRestaurants(), fetchVisits()]);
+    await Promise.all([fetchRestaurants(userId), fetchVisits(userId)]);
     pushToast("🗑 Restaurant supprimé");
   };
 
   const saveRestaurant = async (id: string, newRating: number, tags: string[], price_eur: number | null) => {
+    if (!userId) return;
+
     const safeRating = Math.min(20, Math.max(0, newRating));
 
     const { error } = await supabase
       .from("restaurants")
       .update({ rating: safeRating, tags, price_eur })
-      .eq("id", id);
+      .eq("id", id)
+      .eq("user_id", userId);
 
     if (error) {
       console.error("Erreur save:", error.message);
@@ -128,15 +164,18 @@ export default function RestaurantsPage() {
       return;
     }
 
-    await fetchRestaurants();
+    await fetchRestaurants(userId);
     pushToast("💾 Modifications sauvegardées");
   };
 
   const saveVisit = async (visitId: string, price_eur: number | null, visited_at: string) => {
+    if (!userId) return;
+
     const { error } = await supabase
       .from("restaurant_visits")
       .update({ price_eur, visited_at })
-      .eq("id", visitId);
+      .eq("id", visitId)
+      .eq("user_id", userId);
 
     if (error) {
       console.error("Erreur update visit:", error.message);
@@ -144,13 +183,19 @@ export default function RestaurantsPage() {
       return;
     }
 
-    await fetchVisits();
+    await fetchVisits(userId);
     window.dispatchEvent(new Event("visits:changed"));
     pushToast("💾 Visite modifiée");
   };
 
   const deleteVisit = async (visitId: string) => {
-    const { error } = await supabase.from("restaurant_visits").delete().eq("id", visitId);
+    if (!userId) return;
+
+    const { error } = await supabase
+      .from("restaurant_visits")
+      .delete()
+      .eq("id", visitId)
+      .eq("user_id", userId);
 
     if (error) {
       console.error("Erreur delete visit:", error.message);
@@ -158,7 +203,7 @@ export default function RestaurantsPage() {
       return;
     }
 
-    await fetchVisits();
+    await fetchVisits(userId);
     window.dispatchEvent(new Event("visits:changed"));
     pushToast("🗑 Visite supprimée");
   };
@@ -166,41 +211,39 @@ export default function RestaurantsPage() {
   // UI chips
   const chipBase =
     "px-3 py-2 rounded-full text-sm font-semibold transition active:scale-[0.98] " +
-    "focus:outline-none focus:ring-2 focus:ring-[var(--hr-accent)]/30";
+    "focus:outline-none focus:ring-2 focus:ring-[var(--hr-accent)]/30 whitespace-nowrap";
   const chipOn =
     "bg-[var(--hr-accent)] text-[var(--hr-cream)] shadow-sm border border-[var(--hr-accent)]";
   const chipOff =
     "bg-[var(--hr-surface)]/60 text-[var(--hr-muted)] border border-[var(--hr-sand)]/70 hover:bg-[var(--hr-sand)]/15";
 
-  // Stats : somme + count
+  // Stats : somme + count + last visit
   const restaurantsWithStats = useMemo(() => {
-  const map = new Map<string, { count: number; sum: number; last: string | null }>();
+    const map = new Map<string, { count: number; sum: number; last: string | null }>();
 
-  for (const v of visits) {
-    const cur = map.get(v.restaurant_id) ?? { count: 0, sum: 0, last: null };
-    cur.count += 1;
-    cur.sum += Number(v.price_eur) || 0;
+    for (const v of visits) {
+      const cur = map.get(v.restaurant_id) ?? { count: 0, sum: 0, last: null };
+      cur.count += 1;
+      cur.sum += Number(v.price_eur) || 0;
 
-    // last visit (max visited_at)
-    if (!cur.last || v.visited_at > cur.last) cur.last = v.visited_at;
+      if (!cur.last || v.visited_at > cur.last) cur.last = v.visited_at;
 
-    map.set(v.restaurant_id, cur);
-  }
+      map.set(v.restaurant_id, cur);
+    }
 
-  return restaurants.map((r) => {
-    const s = map.get(r.id);
-    const count = s?.count ?? 0;
-    const sum = s?.sum ?? 0;
+    return restaurants.map((r) => {
+      const s = map.get(r.id);
+      const count = s?.count ?? 0;
+      const sum = s?.sum ?? 0;
 
-    return {
-      ...r,
-      visit_count: count,
-      total_spent_eur: Math.round(sum * 10) / 10,
-      last_visit_at: s?.last ?? null,
-    };
-  });
+      return {
+        ...r,
+        visit_count: count,
+        total_spent_eur: Math.round(sum * 10) / 10,
+        last_visit_at: s?.last ?? null,
+      };
+    });
   }, [restaurants, visits]);
-
 
   const visibleRestaurants = useMemo(() => {
     const terms = search.toLowerCase().split(" ").filter(Boolean);
@@ -210,7 +253,7 @@ export default function RestaurantsPage() {
 
       const name = (restaurant.name ?? "").toLowerCase();
       const city = (restaurant.city ?? "").toLowerCase();
-      const tags = (restaurant.tags ?? []).map((t) => t.toLowerCase());
+      const tags = (restaurant.tags ?? []).map((t) => String(t).toLowerCase());
 
       return terms.every(
         (term) =>
@@ -232,36 +275,28 @@ export default function RestaurantsPage() {
       return sorted;
     }
 
-    if (sortMode === "recent") {
-  // Dernière visite d'abord; ceux sans visite à la fin
-  sorted.sort((a: any, b: any) => {
-    const la = a.last_visit_at;
-    const lb = b.last_visit_at;
+    // recent
+    sorted.sort((a: any, b: any) => {
+      const la = a.last_visit_at;
+      const lb = b.last_visit_at;
 
-    if (la && lb) return la < lb ? 1 : -1; // desc ISO
-    if (la && !lb) return -1;
-    if (!la && lb) return 1;
+      if (la && lb) return la < lb ? 1 : -1;
+      if (la && !lb) return -1;
+      if (!la && lb) return 1;
 
-    // fallback : created_at si tu l’as encore, sinon stable
-    const ca = a.created_at ?? "";
-    const cb = b.created_at ?? "";
-    return ca < cb ? 1 : -1;
-  });
-
-  return sorted;
-}
-
+      const ca = a.created_at ?? "";
+      const cb = b.created_at ?? "";
+      return ca < cb ? 1 : -1;
+    });
 
     return sorted;
   }, [restaurantsWithStats, search, sortMode]);
 
-  // ✅ ouvrir l’édition visite
+  // ouvrir édition visite
   const openEditVisit = (v: VisitRow) => {
     setEditingVisit(v);
-
     setEditVisitPrice(v.price_eur == null ? "" : String(v.price_eur));
 
-    // input type="date" veut yyyy-mm-dd
     const d = new Date(v.visited_at);
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -269,7 +304,7 @@ export default function RestaurantsPage() {
     setEditVisitDate(`${yyyy}-${mm}-${dd}`);
   };
 
-  // ✅ sauver l’édition visite
+  // sauver édition visite
   const submitEditVisit = async () => {
     if (!editingVisit) return;
 
@@ -279,15 +314,15 @@ export default function RestaurantsPage() {
       const safePrice =
         parsedPrice == null ? null : Number.isFinite(parsedPrice) ? Math.max(0, parsedPrice) : null;
 
-      // on garde l’heure d’origine si possible, sinon midi pour éviter décalages
       const base = new Date(editingVisit.visited_at);
       const hh = Number.isNaN(base.getTime()) ? 12 : base.getHours();
       const min = Number.isNaN(base.getTime()) ? 0 : base.getMinutes();
 
-      const newISO = new Date(`${editVisitDate}T${String(hh).padStart(2, "0")}:${String(min).padStart(2, "0")}:00`).toISOString();
+      const newISO = new Date(
+        `${editVisitDate}T${String(hh).padStart(2, "0")}:${String(min).padStart(2, "0")}:00`
+      ).toISOString();
 
       await saveVisit(editingVisit.id, safePrice, newISO);
-
       setEditingVisit(null);
     } finally {
       setSavingVisit(false);
@@ -296,7 +331,7 @@ export default function RestaurantsPage() {
 
   return (
     <div className="space-y-4">
-      {/* Toast global */}
+      {/* Toast */}
       {toast && (
         <div className="fixed top-16 left-4 right-4 z-50">
           <div className="mx-auto max-w-md bg-[var(--hr-ink)] text-[var(--hr-cream)] px-4 py-3 rounded-2xl shadow">
@@ -311,7 +346,7 @@ export default function RestaurantsPage() {
         onClose={() => setVisitsSheet(null)}
         title={visitsSheet ? `Visites · ${visitsSheet.name}` : "Visites"}
       >
-        {!visitsLoaded ? (
+        {loading ? (
           <div className="space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
               <VisitRowSkeleton key={i} />
@@ -319,65 +354,62 @@ export default function RestaurantsPage() {
           </div>
         ) : (
           <VisitsList
-  restaurantId={visitsSheet?.id ?? ""}
-  visits={visits}
-  onEditVisit={openEditVisit}
-  onDeleteVisit={(visitId) => {
-    const v = visits.find((x) => x.id === visitId);
-    if (!v) return;
+            restaurantId={visitsSheet?.id ?? ""}
+            visits={visits}
+            onEditVisit={openEditVisit}
+            onDeleteVisit={(visitId) => {
+              const v = visits.find((x) => x.id === visitId);
+              if (!v) return;
 
-    setConfirmVisitDelete({
-      id: v.id,
-      label: `${formatDateFR(v.visited_at)} · ${formatPriceEUR(v.price_eur)}`,
-    });
-  }}
-/>
+              setConfirmVisitDelete({
+                id: v.id,
+                label: `${formatDateFR(v.visited_at)} · ${formatPriceEUR(v.price_eur)}`,
+              });
+            }}
+          />
         )}
       </BottomSheet>
 
+      {/* Confirm delete visit */}
       <BottomSheet
-  open={Boolean(confirmVisitDelete)}
-  onClose={() => setConfirmVisitDelete(null)}
-  title="Supprimer la visite ?"
->
-  <p className="text-sm text-[var(--hr-muted)]">
-    Tu es sur le point de supprimer{" "}
-    <span className="font-medium text-[var(--hr-ink)]">
-      {confirmVisitDelete?.label ?? "cette visite"}
-    </span>
-    . Cette action est définitive.
-  </p>
-
-  <div className="flex gap-2 mt-4">
-    <button
-      type="button"
-      onClick={() => setConfirmVisitDelete(null)}
-      className="flex-1 py-3 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-ink)] font-medium"
-    >
-      Annuler
-    </button>
-
-    <button
-      type="button"
-      onClick={async () => {
-        const id = confirmVisitDelete?.id;
-        setConfirmVisitDelete(null);
-        if (!id) return;
-        await deleteVisit(id);
-      }}
-      className="flex-1 py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99]"
-    >
-      Supprimer
-    </button>
-  </div>
-</BottomSheet>
-
-      {/* ✅ BottomSheet : Edit visite */}
-      <BottomSheet
-        open={Boolean(editingVisit)}
-        onClose={() => setEditingVisit(null)}
-        title="Modifier la visite"
+        open={Boolean(confirmVisitDelete)}
+        onClose={() => setConfirmVisitDelete(null)}
+        title="Supprimer la visite ?"
       >
+        <p className="text-sm text-[var(--hr-muted)]">
+          Tu es sur le point de supprimer{" "}
+          <span className="font-medium text-[var(--hr-ink)]">
+            {confirmVisitDelete?.label ?? "cette visite"}
+          </span>
+          . Cette action est définitive.
+        </p>
+
+        <div className="flex gap-2 mt-4">
+          <button
+            type="button"
+            onClick={() => setConfirmVisitDelete(null)}
+            className="flex-1 py-3 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-ink)] font-medium"
+          >
+            Annuler
+          </button>
+
+          <button
+            type="button"
+            onClick={async () => {
+              const id = confirmVisitDelete?.id;
+              setConfirmVisitDelete(null);
+              if (!id) return;
+              await deleteVisit(id);
+            }}
+            className="flex-1 py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99]"
+          >
+            Supprimer
+          </button>
+        </div>
+      </BottomSheet>
+
+      {/* BottomSheet : Edit visite */}
+      <BottomSheet open={Boolean(editingVisit)} onClose={() => setEditingVisit(null)} title="Modifier la visite">
         {!editingVisit ? null : (
           <div className="space-y-4">
             <div className="space-y-2">
@@ -426,15 +458,10 @@ export default function RestaurantsPage() {
       </BottomSheet>
 
       {/* Confirmation suppression restaurant */}
-      <BottomSheet
-        open={Boolean(confirmDeleteId)}
-        onClose={() => setConfirmDeleteId(null)}
-        title="Supprimer ?"
-      >
+      <BottomSheet open={Boolean(confirmDeleteId)} onClose={() => setConfirmDeleteId(null)} title="Supprimer ?">
         <p className="text-sm text-[var(--hr-muted)]">
           Tu es sur le point de supprimer{" "}
-          <span className="font-medium text-[var(--hr-ink)]">{confirmDeleteName}</span>.
-          Cette action est définitive.
+          <span className="font-medium text-[var(--hr-ink)]">{confirmDeleteName}</span>. Cette action est définitive.
         </p>
 
         <div className="flex gap-2 mt-4">
@@ -462,7 +489,11 @@ export default function RestaurantsPage() {
 
       {/* Header + recherche */}
       <div className="space-y-2">
-        <h1 className="text-xl font-bold">🍴 Mes restaurants</h1>
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold">🍴 Mes restaurants</h1>
+          </div>
+        </div>
 
         <input
           type="text"
@@ -473,107 +504,96 @@ export default function RestaurantsPage() {
         />
       </div>
 
-      
-
       {/* Liste */}
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-semibold shrink-0">
-            📌 Liste · {hasLoaded ? visibleRestaurants.length : "—"}
-          </h2>
+          <h2 className="font-semibold shrink-0">📌 Liste</h2>
 
-          <div className="flex gap-2 overflow-x-auto pb-1 -mr-1 pr-1">
-            <button
-              type="button"
-              onClick={() => setSortMode("recent")}
-              className={`whitespace-nowrap ${chipBase} ${sortMode === "recent" ? chipOn : chipOff}`}
-              title="Tri : récents"
-            >
-              🕒
-            </button>
-            <button
-              type="button"
-              onClick={() => setSortMode("best")}
-              className={`whitespace-nowrap ${chipBase} ${sortMode === "best" ? chipOn : chipOff}`}
-              title="Tri : meilleure note"
-            >
-              ⭐
-            </button>
-            <button
-              type="button"
-              onClick={() => setSortMode("price")}
-              className={`whitespace-nowrap ${chipBase} ${sortMode === "price" ? chipOn : chipOff}`}
-              title="Tri : total dépensé"
-            >
-              💰
-            </button>
+          {/* ✅ anti-coupure chips */}
+          <div className="-mx-4 px-4">
+            <div className="flex gap-2 overflow-x-auto pb-2 pt-1 pr-2">
+              <button
+                type="button"
+                onClick={() => setSortMode("recent")}
+                className={`${chipBase} ${sortMode === "recent" ? chipOn : chipOff}`}
+                title="Tri : récents"
+              >
+                🕒
+              </button>
+              <button
+                type="button"
+                onClick={() => setSortMode("best")}
+                className={`${chipBase} ${sortMode === "best" ? chipOn : chipOff}`}
+                title="Tri : meilleure note"
+              >
+                ⭐
+              </button>
+              <button
+                type="button"
+                onClick={() => setSortMode("price")}
+                className={`${chipBase} ${sortMode === "price" ? chipOn : chipOff}`}
+                title="Tri : total dépensé"
+              >
+                💰
+              </button>
+            </div>
           </div>
         </div>
 
-        {!hasLoaded ? (
+        {loading ? (
           <ul className="space-y-3">
             {Array.from({ length: 4 }).map((_, i) => (
               <RestaurantCardSkeleton key={i} />
             ))}
           </ul>
         ) : visibleRestaurants.length === 0 ? (
-  restaurants.length === 0 ? (
-    // ✅ Etat vide "tu n'as aucun resto"
-    <div className="flex flex-col items-center justify-center text-center px-6 py-16">
-      <div className="text-5xl mb-4">🍝</div>
+          restaurants.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center px-6 py-16">
+              <div className="text-5xl mb-4">🍝</div>
 
-      <h3 className="text-lg font-semibold text-[var(--hr-ink)]">
-        Aucun restaurant pour l’instant
-      </h3>
+              <h3 className="text-lg font-semibold text-[var(--hr-ink)]">Aucun restaurant pour l’instant</h3>
 
-      <p className="text-sm text-[var(--hr-muted)] mt-2 max-w-xs">
-        Commence ton carnet perso en ajoutant ton premier resto via la recherche.
-      </p>
+              <p className="text-sm text-[var(--hr-muted)] mt-2 max-w-xs">
+                Commence ton carnet perso en ajoutant ton premier resto via la recherche.
+              </p>
 
-      <Link
-        href="/search"
-        className="mt-6 px-6 py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99]"
-      >
-        ➕ Ajouter mon premier restaurant
-      </Link>
-    </div>
-  ) : (
-    // ✅ Etat vide "aucun match dans la recherche"
-    <div className="flex flex-col items-center justify-center text-center px-6 py-16">
-      <div className="text-5xl mb-4">🔎</div>
+              <Link
+                href="/search"
+                className="mt-6 px-6 py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99]"
+              >
+                ➕ Ajouter mon premier restaurant
+              </Link>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center text-center px-6 py-16">
+              <div className="text-5xl mb-4">🔎</div>
 
-      <h3 className="text-lg font-semibold text-[var(--hr-ink)]">
-        Aucun résultat
-      </h3>
+              <h3 className="text-lg font-semibold text-[var(--hr-ink)]">Aucun résultat</h3>
 
-      <p className="text-sm text-[var(--hr-muted)] mt-2 max-w-xs">
-        Aucun restaurant ne correspond à{" "}
-        <span className="font-medium text-[var(--hr-ink)]">
-          “{search.trim()}”
-        </span>
-        .
-      </p>
+              <p className="text-sm text-[var(--hr-muted)] mt-2 max-w-xs">
+                Aucun restaurant ne correspond à{" "}
+                <span className="font-medium text-[var(--hr-ink)]">“{search.trim()}”</span>.
+              </p>
 
-      <div className="mt-6 flex gap-2 w-full max-w-sm">
-        <button
-          type="button"
-          onClick={() => setSearch("")}
-          className="flex-1 py-3 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-ink)] font-semibold active:scale-[0.99]"
-        >
-          Réinitialiser
-        </button>
+              <div className="mt-6 flex gap-2 w-full max-w-sm">
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  className="flex-1 py-3 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-ink)] font-semibold active:scale-[0.99]"
+                >
+                  Réinitialiser
+                </button>
 
-        <Link
-          href="/search"
-          className="flex-1 py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold text-center active:scale-[0.99]"
-        >
-          Ajouter un resto
-        </Link>
-      </div>
-    </div>
-  )
-) : (
-
+                <Link
+                  href="/search"
+                  className="flex-1 py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold text-center active:scale-[0.99]"
+                >
+                  Ajouter un resto
+                </Link>
+              </div>
+            </div>
+          )
+        ) : (
           <ul className="space-y-3">
             {visibleRestaurants.map((restaurant) => (
               <RestaurantCard
@@ -595,16 +615,6 @@ export default function RestaurantsPage() {
 }
 
 /* ---------- UI Visites (BottomSheet) ---------- */
-
-function formatDateFR(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-function formatPriceEUR(v: number | null) {
-  return v == null ? "—" : `€${v}`;
-}
 
 function VisitRowSkeleton() {
   return (
@@ -637,17 +647,13 @@ function VisitsList({
   const filtered = useMemo(() => {
     return visits
       .filter((v) => v.restaurant_id === restaurantId)
-      .sort((a, b) => (a.visited_at < b.visited_at ? 1 : -1)); // ✅ desc (dernière en haut)
+      .sort((a, b) => (a.visited_at < b.visited_at ? 1 : -1));
   }, [visits, restaurantId]);
 
   if (!restaurantId) return null;
 
   if (filtered.length === 0) {
-    return (
-      <div className="py-8 text-center text-sm text-[var(--hr-muted)]">
-        Aucune visite pour ce restaurant.
-      </div>
-    );
+    return <div className="py-8 text-center text-sm text-[var(--hr-muted)]">Aucune visite pour ce restaurant.</div>;
   }
 
   return (
@@ -657,9 +663,7 @@ function VisitsList({
           <div className="flex items-center gap-3">
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-[var(--hr-ink)]">{formatDateFR(v.visited_at)}</p>
-              <p className="text-sm text-[var(--hr-muted)]">
-                {v.price_eur == null ? "—" : `€${v.price_eur}`}
-              </p>
+              <p className="text-sm text-[var(--hr-muted)]">{formatPriceEUR(v.price_eur)}</p>
             </div>
 
             <button
@@ -679,11 +683,8 @@ function VisitsList({
               title="Supprimer"
               aria-label="Supprimer la visite"
             >
-                🗑
+              🗑
             </button>
-
-            
-
           </div>
         </li>
       ))}

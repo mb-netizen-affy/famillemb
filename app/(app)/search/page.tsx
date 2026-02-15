@@ -41,19 +41,33 @@ function normalize(s: string) {
     .trim();
 }
 
+/**
+ * Highlight robuste : on essaie de retrouver le query dans le texte original
+ * sans se baser sur des indices issus du texte normalisé (risque de décalage).
+ */
 function highlightMatch(text: string, q: string) {
-  const nText = normalize(text);
-  const nQ = normalize(q);
-  if (!nQ) return { before: text, match: "", after: "" };
+  const raw = q.trim();
+  if (!raw) return { before: text, match: "", after: "" };
 
-  const idx = nText.indexOf(nQ);
+  // on cherche sur une version "lowercase", mais on récupère le match original
+  const lowerText = text.toLowerCase();
+  const lowerQ = raw.toLowerCase();
+
+  const idx = lowerText.indexOf(lowerQ);
   if (idx === -1) return { before: text, match: "", after: "" };
 
   return {
     before: text.slice(0, idx),
-    match: text.slice(idx, idx + q.length),
-    after: text.slice(idx + q.length),
+    match: text.slice(idx, idx + raw.length),
+    after: text.slice(idx + raw.length),
   };
+}
+
+function nowISOStable() {
+  // midi local pour éviter les shifts (optionnel)
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  return d.toISOString();
 }
 
 export default function SearchPage() {
@@ -107,6 +121,27 @@ export default function SearchPage() {
     setExistingRestaurantId(null);
   };
 
+  const checkExisting = async (placeId: string) => {
+    if (!userId) return;
+
+    const { data: existing, error } = await supabase
+      .from("restaurants")
+      .select("id")
+      .eq("place_id", placeId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Erreur check existing:", error.message);
+      return;
+    }
+
+    if (existing?.id) {
+      setAlreadyAdded(true);
+      setExistingRestaurantId(existing.id);
+    }
+  };
+
   useEffect(() => {
     const raw = query.trim();
     const nQ = normalize(raw);
@@ -129,7 +164,7 @@ export default function SearchPage() {
       return;
     }
 
-    const t = setTimeout(async () => {
+    const t = window.setTimeout(async () => {
       const req = ++autoReqId.current;
       setLoading(true);
 
@@ -154,7 +189,7 @@ export default function SearchPage() {
       }
     }, 250);
 
-    return () => clearTimeout(t);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
@@ -171,22 +206,7 @@ export default function SearchPage() {
       setSelected(cached);
       lastSelectedQuery.current = query;
       setLoading(false);
-
-      // check existing restaurant by place_id + user_id
-      if (userId) {
-        const { data: existing } = await supabase
-          .from("restaurants")
-          .select("id,rating,tags")
-          .eq("place_id", cached.placeId)
-          .eq("user_id", userId)
-          .maybeSingle();
-
-        if (existing?.id) {
-          setAlreadyAdded(true);
-          setExistingRestaurantId(existing.id);
-        }
-      }
-
+      await checkExisting(cached.placeId);
       return;
     }
 
@@ -211,19 +231,7 @@ export default function SearchPage() {
       lastSelectedQuery.current = query;
       setLoading(false);
 
-      if (userId) {
-        const { data: existing } = await supabase
-          .from("restaurants")
-          .select("id")
-          .eq("place_id", data.placeId)
-          .eq("user_id", userId)
-          .maybeSingle();
-
-        if (existing?.id) {
-          setAlreadyAdded(true);
-          setExistingRestaurantId(existing.id);
-        }
-      }
+      await checkExisting(data.placeId);
     } catch {
       if (req !== detailsReqId.current) return;
       setMsg("❌ Erreur réseau (details).");
@@ -245,6 +253,7 @@ export default function SearchPage() {
         user_id: userId,
         restaurant_id: restaurantId,
         price_eur: p,
+        visited_at: nowISOStable(),
       },
     ]);
 
@@ -255,26 +264,23 @@ export default function SearchPage() {
     }
 
     setMsg("🍴 Visite ajoutée !");
-    setAdding(false);
     setQuery("");
     resetSelection();
+    window.dispatchEvent(new Event("visits:changed"));
   };
 
   const addNewRestaurantWithFirstVisit = async () => {
     if (!selected || !userId) return;
 
-    // Prix (visite)
     const p = Number(myPrice);
     if (!myPrice.trim() || !Number.isFinite(p) || p < 0) {
       setMsg("❌ Entre un prix valide (visite).");
       return;
     }
 
-    // Note + tags (fiche)
     const parsed = myRating === "" ? 0 : Number(myRating);
     const safeRating = clampRating(Number.isFinite(parsed) ? parsed : 0);
 
-    // 1) create restaurant
     const { data: inserted, error: rErr } = await supabase
       .from("restaurants")
       .insert([
@@ -315,12 +321,12 @@ export default function SearchPage() {
       return;
     }
 
-    // 2) create first visit
     const { error: vErr } = await supabase.from("restaurant_visits").insert([
       {
         user_id: userId,
         restaurant_id: restaurantId,
         price_eur: p,
+        visited_at: nowISOStable(),
       },
     ]);
 
@@ -333,6 +339,7 @@ export default function SearchPage() {
     setMsg("✅ Restaurant ajouté + 1ère visite 🍴");
     setQuery("");
     resetSelection();
+    window.dispatchEvent(new Event("visits:changed"));
   };
 
   const canShowSuggestions = predictions.length > 0 && !selected;
@@ -469,7 +476,7 @@ export default function SearchPage() {
             ) : null}
           </div>
 
-          {/* Prix visite (toujours) */}
+          {/* Prix visite */}
           <div className="space-y-2">
             <label className="text-sm font-medium">Prix de cette visite (€)</label>
             <input
@@ -483,7 +490,7 @@ export default function SearchPage() {
             />
           </div>
 
-          {/* Si nouveau resto : note + tags */}
+          {/* Nouveau resto : note + tags */}
           {!alreadyAdded && (
             <>
               <div className="space-y-2">
@@ -502,24 +509,28 @@ export default function SearchPage() {
 
               <div className="space-y-2">
                 <div className="text-sm font-medium">Tes tags</div>
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {AVAILABLE_TAGS.map((tag) => {
-                    const isSelected = myTags.includes(tag);
-                    return (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => toggleMyTag(tag)}
-                        className={`whitespace-nowrap px-3 py-2 rounded-full text-sm border transition active:scale-[0.98] ${
-                          isSelected
-                            ? "bg-[var(--hr-accent)] text-[var(--hr-cream)] border-[var(--hr-accent)]"
-                            : "bg-[var(--hr-surface)]/60 text-[var(--hr-muted)] border-[var(--hr-sand)]/70 hover:bg-[var(--hr-sand)]/15"
-                        }`}
-                      >
-                        #{tag}
-                      </button>
-                    );
-                  })}
+
+                {/* ✅ anti-coupure chips tags */}
+                <div className="-mx-4 px-4">
+                  <div className="flex gap-2 overflow-x-auto pb-2 pt-1 pr-2">
+                    {AVAILABLE_TAGS.map((tag) => {
+                      const isSelected = myTags.includes(tag);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => toggleMyTag(tag)}
+                          className={`whitespace-nowrap px-3 py-2 rounded-full text-sm border transition active:scale-[0.98] ${
+                            isSelected
+                              ? "bg-[var(--hr-accent)] text-[var(--hr-cream)] border-[var(--hr-accent)]"
+                              : "bg-[var(--hr-surface)]/60 text-[var(--hr-muted)] border-[var(--hr-sand)]/70 hover:bg-[var(--hr-sand)]/15"
+                          }`}
+                        >
+                          #{tag}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </>
@@ -531,13 +542,15 @@ export default function SearchPage() {
               setAdding(true);
               setMsg(null);
 
-              if (alreadyAdded && existingRestaurantId) {
-                await addVisitOnly(existingRestaurantId);
-              } else {
-                await addNewRestaurantWithFirstVisit();
+              try {
+                if (alreadyAdded && existingRestaurantId) {
+                  await addVisitOnly(existingRestaurantId);
+                } else {
+                  await addNewRestaurantWithFirstVisit();
+                }
+              } finally {
+                setAdding(false);
               }
-
-              setAdding(false);
             }}
             className="w-full py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold disabled:opacity-60 active:scale-[0.99]"
           >
