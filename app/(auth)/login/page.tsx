@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
@@ -13,11 +13,15 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authMsg, setAuthMsg] = useState<Msg>(null);
+
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authPassword2, setAuthPassword2] = useState("");
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showPassword2, setShowPassword2] = useState(false);
 
   // Champs profil (utilisés seulement en inscription)
   const [firstName, setFirstName] = useState("");
@@ -40,7 +44,9 @@ export default function LoginPage() {
     if (existing?.id) return;
 
     const meta = user.user_metadata ?? {};
-    const cleanFirst = String(meta.first_name ?? meta.name ?? "").trim().slice(0, 40);
+    const cleanFirst = String(meta.first_name ?? meta.name ?? "")
+      .trim()
+      .slice(0, 40);
     const cleanLast = String(meta.last_name ?? "").trim().slice(0, 40);
 
     const { error: insErr } = await supabase.from("profiles").upsert(
@@ -69,16 +75,42 @@ export default function LoginPage() {
 
     init();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        await ensureProfile(session.user);
-        router.replace("/restaurants");
+    const { data: sub } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        if (session?.user) {
+          await ensureProfile(session.user);
+          router.replace("/restaurants");
+        }
       }
-    });
+    );
 
     return () => sub.subscription.unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
+
+  // Reset des champs sensibles quand on change de mode
+  useEffect(() => {
+    setAuthMsg(null);
+    setAuthPassword("");
+    setAuthPassword2("");
+    setShowPassword(false);
+    setShowPassword2(false);
+  }, [authMode]);
+
+  const email = useMemo(() => authEmail.trim().toLowerCase(), [authEmail]);
+
+  const passwordStrength = useMemo(() => {
+    const p = authPassword || "";
+    if (!p) return null;
+    let score = 0;
+    if (p.length >= 8) score++;
+    if (/[A-Z]/.test(p)) score++;
+    if (/[0-9]/.test(p)) score++;
+    if (/[^A-Za-z0-9]/.test(p)) score++;
+    if (score <= 1) return { label: "Faible", hint: "Ajoute longueur + chiffres." };
+    if (score === 2) return { label: "Correct", hint: "Un peu plus de variété = mieux." };
+    return { label: "Bon", hint: "Nickel." };
+  }, [authPassword]);
 
   if (loading) {
     return (
@@ -88,31 +120,54 @@ export default function LoginPage() {
     );
   }
 
-  const oauthBtn =
-    "w-12 h-12 rounded-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] " +
-    "flex items-center justify-center shadow-sm active:scale-[0.98] disabled:opacity-60";
+  const onGoogle = async () => {
+    setAuthMsg(null);
+    setSubmitting(true);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${getRedirectBase()}/restaurants` },
+      });
+      if (error) setAuthMsg({ type: "error", text: "Erreur : " + error.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <main className="min-h-screen bg-[var(--hr-cream)] text-[var(--hr-ink)] px-4 py-10">
-      <div className="max-w-md mx-auto space-y-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold text-center">🔐 Connexion</h1>
-          <p className="text-sm text-[var(--hr-muted)]">Accède à ton carnet de restos.</p>
-        </div>
+      <div className="max-w-md mx-auto space-y-5">
+        {/* Header + vibe */}
+        <header className="text-center space-y-2">
+          <div className="mx-auto w-12 h-12 rounded-2xl bg-[var(--hr-sand)]/60 border border-[var(--hr-sand)] shadow-sm flex items-center justify-center">
+            <span className="text-xl">🍽️</span>
+          </div>
+          <h1 className="text-2xl font-bold">
+            {authMode === "login" ? "Bon retour" : "Bienvenue"}
+          </h1>
+          <p className="text-sm text-[var(--hr-muted)]">
+            {authMode === "login"
+              ? "Reconnecte-toi à ton carnet de restos."
+              : "Crée ton carnet et commence à noter tes meilleures adresses."}
+          </p>
+        </header>
 
-        <section className="bg-[var(--hr-surface)] border border-[var(--hr-sand)] rounded-2xl p-5 shadow-sm space-y-4">
-          <div className="flex gap-2">
+        {/* Card */}
+        <section className="relative bg-[var(--hr-surface)] border border-[var(--hr-sand)] rounded-2xl p-5 shadow-sm space-y-4 overflow-hidden">
+          {/* petite touche chaleureuse */}
+          <div className="pointer-events-none absolute -top-24 -right-24 w-64 h-64 rounded-full bg-[var(--hr-sand)]/35 blur-2xl" />
+          <div className="pointer-events-none absolute -bottom-24 -left-24 w-64 h-64 rounded-full bg-[var(--hr-accent)]/10 blur-2xl" />
+
+          {/* Tabs */}
+          <div className="relative flex gap-2">
             <button
               type="button"
               disabled={submitting}
-              onClick={() => {
-                setAuthMode("login");
-                setAuthMsg(null);
-              }}
-              className={`flex-1 py-2 rounded-xl border text-sm font-medium ${
+              onClick={() => setAuthMode("login")}
+              className={`flex-1 py-2 rounded-xl border text-sm font-medium transition ${
                 authMode === "login"
                   ? "bg-[var(--hr-accent)] text-[var(--hr-cream)] border-[var(--hr-accent)]"
-                  : "bg-[var(--hr-surface)] text-[var(--hr-muted)] border-[var(--hr-sand)]"
+                  : "bg-[var(--hr-surface)] text-[var(--hr-muted)] border-[var(--hr-sand)] hover:bg-[var(--hr-sand)]/20"
               } ${submitting ? "opacity-60" : ""}`}
             >
               Connexion
@@ -121,39 +176,65 @@ export default function LoginPage() {
             <button
               type="button"
               disabled={submitting}
-              onClick={() => {
-                setAuthMode("signup");
-                setAuthMsg(null);
-              }}
-              className={`flex-1 py-2 rounded-xl border text-sm font-medium ${
+              onClick={() => setAuthMode("signup")}
+              className={`flex-1 py-2 rounded-xl border text-sm font-medium transition ${
                 authMode === "signup"
                   ? "bg-[var(--hr-accent)] text-[var(--hr-cream)] border-[var(--hr-accent)]"
-                  : "bg-[var(--hr-surface)] text-[var(--hr-muted)] border-[var(--hr-sand)]"
+                  : "bg-[var(--hr-surface)] text-[var(--hr-muted)] border-[var(--hr-sand)] hover:bg-[var(--hr-sand)]/20"
               } ${submitting ? "opacity-60" : ""}`}
             >
               Inscription
             </button>
           </div>
 
+          {/* ✅ Google mis en avant (full width) */}
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={onGoogle}
+            className={`relative w-full py-3 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-sand)]/35 hover:bg-[var(--hr-sand)]/50 transition shadow-sm font-semibold flex items-center justify-center gap-3 active:scale-[0.99] ${
+              submitting ? "opacity-70" : ""
+            }`}
+          >
+            <GoogleIcon />
+            <span>Continuer avec Google</span>
+          </button>
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-[var(--hr-sand)]" />
+            <span className="text-xs text-[var(--hr-muted)]">ou</span>
+            <div className="h-px flex-1 bg-[var(--hr-sand)]" />
+          </div>
+
+          {/* Form email/mdp */}
           <form
-            className="space-y-3"
+            className="relative space-y-3"
             onSubmit={async (e) => {
               e.preventDefault();
               setAuthMsg(null);
-
-              const email = authEmail.trim().toLowerCase();
-              const password = authPassword;
 
               if (!email) {
                 setAuthMsg({ type: "error", text: "Entre un email valide." });
                 return;
               }
-              if (!password || password.length < 6) {
+              if (!authPassword || authPassword.length < 6) {
                 setAuthMsg({
                   type: "error",
                   text: "Mot de passe trop court (minimum 6 caractères).",
                 });
                 return;
+              }
+              if (authMode === "signup") {
+                const cleanFirst = firstName.trim().slice(0, 40);
+                const cleanLast = lastName.trim().slice(0, 40);
+                if (!cleanFirst || !cleanLast) {
+                  setAuthMsg({ type: "error", text: "Prénom et nom requis." });
+                  return;
+                }
+                if (authPassword !== authPassword2) {
+                  setAuthMsg({ type: "error", text: "Les mots de passe ne correspondent pas." });
+                  return;
+                }
               }
 
               setSubmitting(true);
@@ -162,14 +243,9 @@ export default function LoginPage() {
                   const cleanFirst = firstName.trim().slice(0, 40);
                   const cleanLast = lastName.trim().slice(0, 40);
 
-                  if (!cleanFirst || !cleanLast) {
-                    setAuthMsg({ type: "error", text: "Prénom et nom requis." });
-                    return;
-                  }
-
                   const { data, error } = await supabase.auth.signUp({
                     email,
-                    password,
+                    password: authPassword,
                     options: {
                       data: { first_name: cleanFirst, last_name: cleanLast },
                       emailRedirectTo: `${getRedirectBase()}/restaurants`,
@@ -192,12 +268,13 @@ export default function LoginPage() {
                   setFirstName("");
                   setLastName("");
                   setAuthPassword("");
+                  setAuthPassword2("");
                   return;
                 }
 
                 const { data, error } = await supabase.auth.signInWithPassword({
                   email,
-                  password,
+                  password: authPassword,
                 });
 
                 if (error) {
@@ -220,9 +297,10 @@ export default function LoginPage() {
                     type="text"
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
-                    className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 rounded-2xl placeholder:text-[var(--hr-muted)]"
+                    className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 rounded-2xl placeholder:text-[var(--hr-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--hr-sand)]/60"
                     required
                     disabled={submitting}
+                    autoComplete="given-name"
                   />
                 </div>
 
@@ -232,9 +310,10 @@ export default function LoginPage() {
                     type="text"
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
-                    className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 rounded-2xl placeholder:text-[var(--hr-muted)]"
+                    className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 rounded-2xl placeholder:text-[var(--hr-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--hr-sand)]/60"
                     required
                     disabled={submitting}
+                    autoComplete="family-name"
                   />
                 </div>
               </div>
@@ -247,29 +326,98 @@ export default function LoginPage() {
                 placeholder="ton@email.com"
                 value={authEmail}
                 onChange={(e) => setAuthEmail(e.target.value)}
-                className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 rounded-2xl placeholder:text-[var(--hr-muted)]"
+                className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 rounded-2xl placeholder:text-[var(--hr-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--hr-sand)]/60"
                 required
                 disabled={submitting}
+                autoComplete="email"
+                inputMode="email"
               />
             </div>
 
+            {/* Mot de passe + show/hide */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Mot de passe</label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 rounded-2xl placeholder:text-[var(--hr-muted)]"
-                required
-                disabled={submitting}
-              />
-              <p className="text-xs text-[var(--hr-muted)]">Minimum 6 caractères.</p>
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="••••••••"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 pr-12 rounded-2xl placeholder:text-[var(--hr-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--hr-sand)]/60"
+                  required
+                  disabled={submitting}
+                  autoComplete={authMode === "signup" ? "new-password" : "current-password"}
+                />
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-muted)] hover:bg-[var(--hr-sand)]/20 transition flex items-center justify-center"
+                  aria-label={showPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+                  title={showPassword ? "Masquer" : "Afficher"}
+                >
+                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-[var(--hr-muted)]">Minimum 6 caractères.</p>
+                {passwordStrength && (
+                  <p className="text-xs text-[var(--hr-muted)]">
+                    Robustesse : <span className="font-medium">{passwordStrength.label}</span>
+                  </p>
+                )}
+              </div>
             </div>
+
+            {/* ✅ Confirmation MDP en inscription */}
+            {authMode === "signup" && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Confirmer le mot de passe</label>
+                <div className="relative">
+                  <input
+                    type={showPassword2 ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={authPassword2}
+                    onChange={(e) => setAuthPassword2(e.target.value)}
+                    className="w-full border border-[var(--hr-sand)] bg-[var(--hr-surface)] p-3 pr-12 rounded-2xl placeholder:text-[var(--hr-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--hr-sand)]/60"
+                    required
+                    disabled={submitting}
+                    autoComplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => setShowPassword2((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-muted)] hover:bg-[var(--hr-sand)]/20 transition flex items-center justify-center"
+                    aria-label={
+                      showPassword2 ? "Masquer la confirmation" : "Afficher la confirmation"
+                    }
+                    title={showPassword2 ? "Masquer" : "Afficher"}
+                  >
+                    {showPassword2 ? <EyeOffIcon /> : <EyeIcon />}
+                  </button>
+                </div>
+
+                {authPassword2.length > 0 && (
+                  <p
+                    className={`text-xs ${
+                      authPassword === authPassword2
+                        ? "text-[var(--hr-muted)]"
+                        : "text-red-700"
+                    }`}
+                  >
+                    {authPassword === authPassword2
+                      ? "✅ Les mots de passe correspondent."
+                      : "Les mots de passe ne correspondent pas."}
+                  </p>
+                )}
+              </div>
+            )}
 
             <button
               disabled={submitting}
-              className={`w-full py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99] ${
+              className={`w-full py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99] transition ${
                 submitting ? "opacity-70" : ""
               }`}
             >
@@ -281,16 +429,16 @@ export default function LoginPage() {
             </button>
           </form>
 
+          {/* Actions login */}
           {authMode === "login" && (
             <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
-                className="text-sm underline text-[var(--hr-muted)] disabled:opacity-60"
+                className="text-sm underline text-[var(--hr-muted)] hover:text-[var(--hr-ink)] disabled:opacity-60"
                 disabled={submitting}
                 onClick={async () => {
                   setAuthMsg(null);
 
-                  const email = authEmail.trim().toLowerCase();
                   if (!email) {
                     setAuthMsg({ type: "error", text: "Entre ton email d’abord." });
                     return;
@@ -317,49 +465,7 @@ export default function LoginPage() {
             </div>
           )}
 
-          <div className="flex items-center gap-3">
-            <div className="h-px flex-1 bg-[var(--hr-sand)]" />
-            <span className="text-xs text-[var(--hr-muted)]">ou</span>
-            <div className="h-px flex-1 bg-[var(--hr-sand)]" />
-          </div>
-
-          {/* ✅ Google + Apple côte à côte */}
-          <div className="flex items-center justify-center gap-3">
-            <button
-              type="button"
-              disabled={submitting}
-              onClick={() =>
-                supabase.auth.signInWithOAuth({
-                  provider: "google",
-                  options: { redirectTo: `${getRedirectBase()}/restaurants` },
-                })
-              }
-              className={oauthBtn}
-              aria-label="Continuer avec Google"
-              title="Continuer avec Google"
-            >
-              <GoogleIcon />
-            </button>
-
-              
-            {/*Boutton Apple - Future option
-            <button
-              type="button"
-              disabled={submitting}
-              onClick={() =>
-                supabase.auth.signInWithOAuth({
-                  provider: "apple",
-                  options: { redirectTo: `${getRedirectBase()}/restaurants` },
-                })
-              }
-              className={oauthBtn}
-              aria-label="Continuer avec Apple"
-              title="Continuer avec Apple"
-            >
-              <AppleIcon />
-            </button>*/}
-          </div>
-
+          {/* Message */}
           {authMsg && (
             <div
               className={`text-sm rounded-2xl border p-3 ${
@@ -367,6 +473,8 @@ export default function LoginPage() {
                   ? "border-red-200 bg-red-50 text-red-700"
                   : "border-[var(--hr-sand)] bg-[var(--hr-sand)]/25"
               }`}
+              role="status"
+              aria-live="polite"
             >
               {authMsg.text}
             </div>
@@ -404,14 +512,24 @@ function GoogleIcon() {
   );
 }
 
-/*Boutton Apple - Future option
-function AppleIcon() {
+function EyeIcon() {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
       <path
         fill="currentColor"
-        d="M16.365 1.43c0 1.14-.43 2.22-1.2 3.04-.83.9-2.19 1.59-3.36 1.5-.15-1.14.47-2.32 1.25-3.13.86-.9 2.28-1.55 3.31-1.41zM20.52 17.2c-.48 1.08-.71 1.56-1.33 2.52-.86 1.34-2.08 3.01-3.6 3.02-1.35.01-1.7-.88-3.53-.87-1.84.01-2.22.89-3.56.88-1.52-.01-2.68-1.52-3.54-2.86-2.48-3.84-2.74-8.34-1.21-10.68 1.09-1.67 2.81-2.65 4.42-2.65 1.64 0 2.67.9 4.02.9 1.31 0 2.11-.91 4-.91 1.43 0 2.95.78 4.04 2.12-3.55 1.94-2.98 7.01.29 8.53z"
+        d="M12 5c5.5 0 9.5 4.5 10.5 6c-1 1.5-5 6-10.5 6S2.5 12.5 1.5 11C2.5 9.5 6.5 5 12 5Zm0 2C8 7 4.8 10 3.7 11c1.1 1 4.3 4 8.3 4s7.2-3 8.3-4C19.2 10 16 7 12 7Zm0 1.5A2.5 2.5 0 1 1 9.5 11 2.5 2.5 0 0 1 12 8.5Zm0 2A.5.5 0 1 0 12.5 11 .5.5 0 0 0 12 10.5Z"
       />
     </svg>
   );
-}*/
+}
+
+function EyeOffIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M3.3 2.6 21.4 20.7l-1.4 1.4-2.2-2.2c-1.6.8-3.5 1.1-5.8 1.1C6.5 21 2.5 16.5 1.5 15c.6-1 2.6-3.5 5.9-5.1L1.9 4l1.4-1.4Zm8.7 5.4c5.5 0 9.5 4.5 10.5 6c-.4.6-1.3 1.8-2.8 2.9l-1.5-1.5c1-.8 1.7-1.6 2.1-2.1-1.1-1-4.3-4-8.3-4-.7 0-1.4.1-2 .2L8.5 8.1c1.1-.1 2.2-.1 3.5-.1Zm-6.2 3.2c-1 .8-1.7 1.6-2.1 2.1 1.1 1 4.3 4 8.3 4 1.5 0 2.9-.4 4.1-.9l-1.6-1.6c-.7.3-1.6.5-2.5.5A3.5 3.5 0 0 1 8.5 11c0-.4.1-.8.2-1.2L5.8 11.2Z"
+      />
+    </svg>
+  );
+}

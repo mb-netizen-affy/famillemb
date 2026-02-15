@@ -12,6 +12,7 @@ type Tab = {
 const TABS: Tab[] = [
   { href: "/search", label: "Recherche", icon: "🔎" },
   { href: "/restaurants", label: "Mes restos", icon: "🍴" },
+  { href: "/stats", label: "Stats", icon: "📊" },
 ];
 
 function isActive(pathname: string, href: string) {
@@ -19,6 +20,8 @@ function isActive(pathname: string, href: string) {
     return pathname === "/restaurants" || pathname.startsWith("/restaurants/");
   if (href === "/search")
     return pathname === "/search" || pathname.startsWith("/search/");
+  if (href === "/stats")
+    return pathname === "/stats" || pathname.startsWith("/stats/");
   return pathname === href;
 }
 
@@ -46,9 +49,10 @@ export default function BottomNav() {
           p-1
         "
       >
-        <div className="relative grid grid-cols-2 gap-1">
+        <div className="relative grid grid-cols-3 gap-1">
           {TABS.map((t) => {
             const active = isActive(pathname, t.href);
+
             return (
               <Link
                 key={t.href}
