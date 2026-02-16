@@ -8,6 +8,7 @@ type ProfileRow = {
   name: string | null;
   last_name: string | null;
   locale: "fr" | "en" | "es" | "it" | "de";
+  is_public: boolean; // ✅ NEW
 };
 
 const LOCALES: { value: ProfileRow["locale"]; label: string }[] = [
@@ -36,6 +37,7 @@ export default function ProfilePage() {
     name: null,
     last_name: null,
     locale: "fr",
+    is_public: false,
   });
 
   // Edition
@@ -45,6 +47,9 @@ export default function ProfilePage() {
   const [editLocale, setEditLocale] = useState<ProfileRow["locale"]>("fr");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+
+  // ✅ switch public/privé
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
 
   const loadProfile = async () => {
     const { data } = await supabase.auth.getUser();
@@ -60,13 +65,11 @@ export default function ProfilePage() {
 
     const { data: p, error: pErr } = await supabase
       .from("profiles")
-      .select("name,last_name,locale")
+      .select("name,last_name,locale,is_public")
       .eq("id", user.id)
       .maybeSingle();
 
-    if (pErr) {
-      console.error("Erreur profile:", pErr.message);
-    }
+    if (pErr) console.error("Erreur profile:", pErr.message);
 
     const pLocale = normalizeLocale((p as any)?.locale);
 
@@ -74,7 +77,9 @@ export default function ProfilePage() {
       name: (p as any)?.name ?? null,
       last_name: (p as any)?.last_name ?? null,
       locale: pLocale,
+      is_public: Boolean((p as any)?.is_public ?? false),
     };
+
     setProfile(next);
 
     setEditName((next.name ?? "").toString());
@@ -122,6 +127,8 @@ export default function ProfilePage() {
         name: cleanName,
         last_name: cleanLast,
         locale: editLocale,
+        // ✅ IMPORTANT: on conserve la privacy
+        is_public: profile.is_public,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "id" }
@@ -143,6 +150,39 @@ export default function ProfilePage() {
     setIsEditing(false);
     setSaving(false);
     setMsg("✅ Profil mis à jour");
+  };
+
+  const togglePrivacy = async () => {
+    if (!userId) return;
+
+    // ✅ bloque pendant l’édition pour éviter des conflits UX
+    if (isEditing) {
+      setMsg("ℹ️ Termine l’édition avant de changer la visibilité.");
+      return;
+    }
+
+    const next = !profile.is_public;
+
+    // optimistic
+    setProfile((p) => ({ ...p, is_public: next }));
+    setSavingPrivacy(true);
+    setMsg(null);
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ is_public: next, updated_at: new Date().toISOString() })
+      .eq("id", userId);
+
+    setSavingPrivacy(false);
+
+    if (error) {
+      // rollback
+      setProfile((p) => ({ ...p, is_public: !next }));
+      setMsg("❌ Erreur lors de la mise à jour de la visibilité.");
+      return;
+    }
+
+    setMsg(next ? "✅ Ton compte est maintenant public" : "✅ Ton compte est maintenant privé");
   };
 
   if (loading) {
@@ -168,10 +208,35 @@ export default function ProfilePage() {
       <div className="max-w-md mx-auto space-y-5">
         <header className="space-y-1">
           <h1 className="text-xl font-bold">👤 Profil</h1>
-          <p className="text-sm text-[var(--hr-muted)]">
-            Paramètres de ton compte.
-          </p>
+          <p className="text-sm text-[var(--hr-muted)]">Paramètres de ton compte.</p>
         </header>
+
+        {/* ✅ Visibilité du compte */}
+        <section className="bg-[var(--hr-surface)] border border-[var(--hr-sand)] rounded-2xl p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-[var(--hr-ink)]">Compte public</p>
+              <p className="text-xs text-[var(--hr-muted)] mt-1">
+                {profile.is_public
+                  ? "Visible via un lien public (à venir)."
+                  : "Seulement toi peux voir ton carnet."}
+              </p>
+            </div>
+
+            <Switch
+              checked={profile.is_public}
+              onClick={togglePrivacy}
+              disabled={savingPrivacy}
+              label={profile.is_public ? "Public" : "Privé"}
+            />
+          </div>
+
+          {savingPrivacy ? (
+            <p className="text-xs text-[var(--hr-muted)] mt-3">Sauvegarde…</p>
+          ) : null}
+        </section>
+
+        
 
         {/* Bloc compte */}
         <section className="bg-[var(--hr-surface)] border border-[var(--hr-sand)] rounded-2xl p-4 shadow-sm">
@@ -192,8 +257,7 @@ export default function ProfilePage() {
                   <div className="space-y-1">
                     <p className="text-xs text-[var(--hr-muted)]">Langue</p>
                     <p className="text-sm font-semibold text-[var(--hr-ink)]">
-                      {LOCALES.find((l) => l.value === profile.locale)?.label ??
-                        "🇫🇷 Français"}
+                      {LOCALES.find((l) => l.value === profile.locale)?.label ?? "🇫🇷 Français"}
                     </p>
                   </div>
                 </>
@@ -223,9 +287,7 @@ export default function ProfilePage() {
                     <label className="text-xs text-[var(--hr-muted)]">Langue</label>
                     <select
                       value={editLocale}
-                      onChange={(e) =>
-                        setEditLocale(e.target.value as ProfileRow["locale"])
-                      }
+                      onChange={(e) => setEditLocale(e.target.value as ProfileRow["locale"])}
                       className="w-full border border-[var(--hr-sand)] p-3 rounded-2xl bg-[var(--hr-surface)] focus:outline-none focus:ring-2 focus:ring-[var(--hr-accent)]"
                     >
                       {LOCALES.map((l) => (
@@ -280,7 +342,27 @@ export default function ProfilePage() {
           </div>
         </section>
 
-        {/* (Optionnel) bouton déconnexion, si tu veux */}
+        {/* Partage du compte*/}
+        {profile.is_public ? (
+  <button
+    type="button"
+    onClick={async () => {
+      const url = `${window.location.origin}/p/${userId}`;
+      await navigator.clipboard.writeText(url);
+      setMsg("✅ Lien copié dans le presse-papiers");
+    }}
+    className="mt-3 w-full py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99]"
+  >
+    🔗 Copier mon lien public
+  </button>
+) : (
+  <p className="text-xs text-[var(--hr-muted)] mt-3">
+    Active le mode public pour générer un lien partageable.
+  </p>
+)}
+
+
+        {/* Déconnexion */}
         <button
           type="button"
           className="w-full py-3 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-ink)] font-semibold active:scale-[0.99]"
@@ -302,5 +384,51 @@ function InfoPill({ label, value }: { label: string; value: string }) {
       <p className="text-xs text-[var(--hr-muted)]">{label}</p>
       <p className="text-sm font-semibold text-[var(--hr-ink)] truncate">{value}</p>
     </div>
+  );
+}
+
+function Switch({
+  checked,
+  onClick,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return ( 
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onClick}
+      disabled={disabled}
+      className={`shrink-0 inline-flex items-center gap-2 px-2 py-2 rounded-full border transition active:scale-[0.98] ${
+        checked
+          ? "border-[var(--hr-accent)] bg-[var(--hr-accent)]/15"
+          : "border-[var(--hr-sand)] bg-[var(--hr-surface)]"
+      } ${disabled ? "opacity-60" : ""}`}
+      title={checked ? "Compte public" : "Compte privé"}
+    >
+      {label ? (
+        <span className="text-xs font-semibold text-[var(--hr-ink)] w-12 text-center">
+          {label}
+        </span>
+      ) : null}
+
+      <span
+        className={`relative inline-flex w-12 h-7 rounded-full transition ${
+          checked ? "bg-[var(--hr-accent)]" : "bg-[var(--hr-sand)]"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-6 h-6 rounded-full bg-[var(--hr-cream)] shadow-sm transition-transform ${
+            checked ? "translate-x-[22px]" : "translate-x-0.5"
+          }`}
+        />
+      </span>
+    </button>
   );
 }
