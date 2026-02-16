@@ -16,6 +16,7 @@ type VisitRow = {
   restaurant_id: string;
   price_eur: number | null;
   visited_at: string;
+  covers: number;
 };
 
 function formatDateFR(iso: string) {
@@ -26,7 +27,6 @@ function formatDateFR(iso: string) {
 
 function formatPriceEUR(v: number | null) {
   if (v == null) return "—";
-  // format simple, stable
   const n = Math.round(v * 10) / 10;
   return `€${n}`;
 }
@@ -55,11 +55,12 @@ export default function RestaurantsPage() {
   const [editingVisit, setEditingVisit] = useState<VisitRow | null>(null);
   const [editVisitPrice, setEditVisitPrice] = useState<string>("");
   const [editVisitDate, setEditVisitDate] = useState<string>(""); // yyyy-mm-dd
+  const [editVisitCovers, setEditVisitCovers] = useState<string>("2");
   const [savingVisit, setSavingVisit] = useState(false);
 
   const [confirmVisitDelete, setConfirmVisitDelete] = useState<{
     id: string;
-    label: string; // ex: "12 janv. 2026 · €25"
+    label: string; // ex: "12 janv. 2026 · €25 · 2 couverts"
   } | null>(null);
 
   const pushToast = (msg: string) => {
@@ -85,7 +86,7 @@ export default function RestaurantsPage() {
   const fetchVisits = async (uid: string) => {
     const { data, error } = await supabase
       .from("restaurant_visits")
-      .select("id,restaurant_id,price_eur,visited_at")
+      .select("id,restaurant_id,price_eur,visited_at,covers")
       .eq("user_id", uid);
 
     if (error) {
@@ -118,7 +119,6 @@ export default function RestaurantsPage() {
 
     init();
 
-    // quand tu modifies/supprimes/ajoutes des visites ailleurs
     const onChanged = async () => {
       if (!userId) return;
       await fetchVisits(userId);
@@ -147,7 +147,12 @@ export default function RestaurantsPage() {
     pushToast("🗑 Restaurant supprimé");
   };
 
-  const saveRestaurant = async (id: string, newRating: number, tags: string[], price_eur: number | null) => {
+  const saveRestaurant = async (
+    id: string,
+    newRating: number,
+    tags: string[],
+    price_eur: number | null
+  ) => {
     if (!userId) return;
 
     const safeRating = Math.min(20, Math.max(0, newRating));
@@ -168,12 +173,17 @@ export default function RestaurantsPage() {
     pushToast("💾 Modifications sauvegardées");
   };
 
-  const saveVisit = async (visitId: string, price_eur: number | null, visited_at: string) => {
+  const saveVisit = async (
+    visitId: string,
+    price_eur: number | null,
+    visited_at: string,
+    covers: number
+  ) => {
     if (!userId) return;
 
     const { error } = await supabase
       .from("restaurant_visits")
-      .update({ price_eur, visited_at })
+      .update({ price_eur, visited_at, covers })
       .eq("id", visitId)
       .eq("user_id", userId);
 
@@ -256,10 +266,7 @@ export default function RestaurantsPage() {
       const tags = (restaurant.tags ?? []).map((t) => String(t).toLowerCase());
 
       return terms.every(
-        (term) =>
-          name.includes(term) ||
-          city.includes(term) ||
-          tags.some((tag) => tag.includes(term))
+        (term) => name.includes(term) || city.includes(term) || tags.some((tag) => tag.includes(term))
       );
     });
 
@@ -296,6 +303,7 @@ export default function RestaurantsPage() {
   const openEditVisit = (v: VisitRow) => {
     setEditingVisit(v);
     setEditVisitPrice(v.price_eur == null ? "" : String(v.price_eur));
+    setEditVisitCovers(String(v.covers ?? 2));
 
     const d = new Date(v.visited_at);
     const yyyy = d.getFullYear();
@@ -307,6 +315,15 @@ export default function RestaurantsPage() {
   // sauver édition visite
   const submitEditVisit = async () => {
     if (!editingVisit) return;
+
+    const parsedCovers = Number(editVisitCovers);
+    const safeCovers =
+      Number.isFinite(parsedCovers) && Number.isInteger(parsedCovers) ? Math.max(1, parsedCovers) : null;
+
+    if (safeCovers == null) {
+      pushToast("❌ Couverts invalides (min 1).");
+      return;
+    }
 
     setSavingVisit(true);
     try {
@@ -322,7 +339,7 @@ export default function RestaurantsPage() {
         `${editVisitDate}T${String(hh).padStart(2, "0")}:${String(min).padStart(2, "0")}:00`
       ).toISOString();
 
-      await saveVisit(editingVisit.id, safePrice, newISO);
+      await saveVisit(editingVisit.id, safePrice, newISO, safeCovers);
       setEditingVisit(null);
     } finally {
       setSavingVisit(false);
@@ -363,7 +380,7 @@ export default function RestaurantsPage() {
 
               setConfirmVisitDelete({
                 id: v.id,
-                label: `${formatDateFR(v.visited_at)} · ${formatPriceEUR(v.price_eur)}`,
+                label: `${formatDateFR(v.visited_at)} · ${formatPriceEUR(v.price_eur)} · ${v.covers ?? 1} couvert(s)`,
               });
             }}
           />
@@ -409,7 +426,11 @@ export default function RestaurantsPage() {
       </BottomSheet>
 
       {/* BottomSheet : Edit visite */}
-      <BottomSheet open={Boolean(editingVisit)} onClose={() => setEditingVisit(null)} title="Modifier la visite">
+      <BottomSheet
+        open={Boolean(editingVisit)}
+        onClose={() => setEditingVisit(null)}
+        title="Modifier la visite"
+      >
         {!editingVisit ? null : (
           <div className="space-y-4">
             <div className="space-y-2">
@@ -422,18 +443,38 @@ export default function RestaurantsPage() {
               />
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Montant (€)</label>
-              <input
-                type="number"
-                min={0}
-                step={0.5}
-                placeholder="ex: 25"
-                value={editVisitPrice}
-                onChange={(e) => setEditVisitPrice(e.target.value)}
-                className="w-full border border-[var(--hr-sand)] p-3 rounded-2xl bg-[var(--hr-surface)]"
-              />
-            </div>
+            <div className="grid grid-cols-2 gap-3">
+  <div className="space-y-2">
+    <label className="text-sm font-medium">Montant (€)</label>
+    <input
+      type="number"
+      min={0}
+      step={0.5}
+      placeholder="ex: 25"
+      value={editVisitPrice}
+      onChange={(e) => setEditVisitPrice(e.target.value)}
+      className="w-full border border-[var(--hr-sand)] p-3 rounded-2xl bg-[var(--hr-surface)]"
+    />
+  </div>
+
+  <div className="space-y-2">
+    <label className="text-sm font-medium">Couverts</label>
+    <input
+      type="number"
+      min={1}
+      step={1}
+      placeholder="ex: 2"
+      value={editVisitCovers}
+      onChange={(e) => setEditVisitCovers(e.target.value)}
+      className="w-full border border-[var(--hr-sand)] p-3 rounded-2xl bg-[var(--hr-surface)]"
+    />
+  </div>
+
+  <p className="col-span-2 text-right text-xs text-[var(--hr-muted)] -mt-1">
+    Minimum 1 couvert.
+  </p>
+</div>
+
 
             <div className="flex gap-2 pt-1">
               <button
@@ -458,10 +499,15 @@ export default function RestaurantsPage() {
       </BottomSheet>
 
       {/* Confirmation suppression restaurant */}
-      <BottomSheet open={Boolean(confirmDeleteId)} onClose={() => setConfirmDeleteId(null)} title="Supprimer ?">
+      <BottomSheet
+        open={Boolean(confirmDeleteId)}
+        onClose={() => setConfirmDeleteId(null)}
+        title="Supprimer ?"
+      >
         <p className="text-sm text-[var(--hr-muted)]">
           Tu es sur le point de supprimer{" "}
-          <span className="font-medium text-[var(--hr-ink)]">{confirmDeleteName}</span>. Cette action est définitive.
+          <span className="font-medium text-[var(--hr-ink)]">{confirmDeleteName}</span>. Cette action
+          est définitive.
         </p>
 
         <div className="flex gap-2 mt-4">
@@ -551,7 +597,9 @@ export default function RestaurantsPage() {
             <div className="flex flex-col items-center justify-center text-center px-6 py-16">
               <div className="text-5xl mb-4">🍝</div>
 
-              <h3 className="text-lg font-semibold text-[var(--hr-ink)]">Aucun restaurant pour l’instant</h3>
+              <h3 className="text-lg font-semibold text-[var(--hr-ink)]">
+                Aucun restaurant pour l’instant
+              </h3>
 
               <p className="text-sm text-[var(--hr-muted)] mt-2 max-w-xs">
                 Commence ton carnet perso en ajoutant ton premier resto via la recherche.
@@ -653,7 +701,11 @@ function VisitsList({
   if (!restaurantId) return null;
 
   if (filtered.length === 0) {
-    return <div className="py-8 text-center text-sm text-[var(--hr-muted)]">Aucune visite pour ce restaurant.</div>;
+    return (
+      <div className="py-8 text-center text-sm text-[var(--hr-muted)]">
+        Aucune visite pour ce restaurant.
+      </div>
+    );
   }
 
   return (
@@ -663,7 +715,9 @@ function VisitsList({
           <div className="flex items-center gap-3">
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-[var(--hr-ink)]">{formatDateFR(v.visited_at)}</p>
-              <p className="text-sm text-[var(--hr-muted)]">{formatPriceEUR(v.price_eur)}</p>
+              <p className="text-sm text-[var(--hr-muted)]">
+                {formatPriceEUR(v.price_eur)} · {v.covers ?? 1} couvert(s)
+              </p>
             </div>
 
             <button

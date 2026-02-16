@@ -41,15 +41,10 @@ function normalize(s: string) {
     .trim();
 }
 
-/**
- * Highlight robuste : on essaie de retrouver le query dans le texte original
- * sans se baser sur des indices issus du texte normalisé (risque de décalage).
- */
 function highlightMatch(text: string, q: string) {
   const raw = q.trim();
   if (!raw) return { before: text, match: "", after: "" };
 
-  // on cherche sur une version "lowercase", mais on récupère le match original
   const lowerText = text.toLowerCase();
   const lowerQ = raw.toLowerCase();
 
@@ -64,7 +59,6 @@ function highlightMatch(text: string, q: string) {
 }
 
 function nowISOStable() {
-  // midi local pour éviter les shifts (optionnel)
   const d = new Date();
   d.setHours(12, 0, 0, 0);
   return d.toISOString();
@@ -81,9 +75,12 @@ export default function SearchPage() {
   const [adding, setAdding] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const [myRating, setMyRating] = useState<string>(""); // utilisé seulement si nouveau resto
+  const [myRating, setMyRating] = useState<string>("");
   const [myTags, setMyTags] = useState<string[]>([]);
-  const [myPrice, setMyPrice] = useState<string>(""); // prix de la visite
+  const [myPrice, setMyPrice] = useState<string>("");
+
+  // ✅ NOUVEAU : couverts obligatoires
+  const [myCovers, setMyCovers] = useState<string>("2");
 
   const [alreadyAdded, setAlreadyAdded] = useState(false);
   const [existingRestaurantId, setExistingRestaurantId] = useState<string | null>(null);
@@ -117,6 +114,7 @@ export default function SearchPage() {
     setMyRating("");
     setMyTags([]);
     setMyPrice("");
+    setMyCovers("2"); // ✅ reset couverts
     setAlreadyAdded(false);
     setExistingRestaurantId(null);
   };
@@ -239,20 +237,34 @@ export default function SearchPage() {
     }
   };
 
-  const addVisitOnly = async (restaurantId: string) => {
-    if (!userId) return;
-
+  const validateVisitInputs = () => {
     const p = Number(myPrice);
     if (!myPrice.trim() || !Number.isFinite(p) || p < 0) {
       setMsg("❌ Entre un prix valide.");
-      return;
+      return null;
     }
+
+    const c = Number(myCovers);
+    if (!myCovers.trim() || !Number.isFinite(c) || !Number.isInteger(c) || c < 1) {
+      setMsg("❌ Entre un nombre de couverts valide (minimum 1).");
+      return null;
+    }
+
+    return { price: p, covers: c };
+  };
+
+  const addVisitOnly = async (restaurantId: string) => {
+    if (!userId) return;
+
+    const v = validateVisitInputs();
+    if (!v) return;
 
     const { error } = await supabase.from("restaurant_visits").insert([
       {
         user_id: userId,
         restaurant_id: restaurantId,
-        price_eur: p,
+        price_eur: v.price,
+        covers: v.covers, // ✅
         visited_at: nowISOStable(),
       },
     ]);
@@ -272,11 +284,8 @@ export default function SearchPage() {
   const addNewRestaurantWithFirstVisit = async () => {
     if (!selected || !userId) return;
 
-    const p = Number(myPrice);
-    if (!myPrice.trim() || !Number.isFinite(p) || p < 0) {
-      setMsg("❌ Entre un prix valide (visite).");
-      return;
-    }
+    const v = validateVisitInputs();
+    if (!v) return;
 
     const parsed = myRating === "" ? 0 : Number(myRating);
     const safeRating = clampRating(Number.isFinite(parsed) ? parsed : 0);
@@ -325,7 +334,8 @@ export default function SearchPage() {
       {
         user_id: userId,
         restaurant_id: restaurantId,
-        price_eur: p,
+        price_eur: v.price,
+        covers: v.covers, // ✅
         visited_at: nowISOStable(),
       },
     ]);
@@ -345,12 +355,17 @@ export default function SearchPage() {
   const canShowSuggestions = predictions.length > 0 && !selected;
   const firstSuggestion = useMemo(() => predictions[0]?.placeId ?? null, [predictions]);
 
-  const canSubmit =
-    !adding &&
-    !!selected &&
-    myPrice.trim() !== "" &&
-    Number.isFinite(Number(myPrice)) &&
-    Number(myPrice) >= 0;
+  const canSubmit = useMemo(() => {
+    if (adding || !selected) return false;
+
+    const p = Number(myPrice);
+    const c = Number(myCovers);
+
+    const okPrice = myPrice.trim() !== "" && Number.isFinite(p) && p >= 0;
+    const okCovers = myCovers.trim() !== "" && Number.isFinite(c) && Number.isInteger(c) && c >= 1;
+
+    return okPrice && okCovers;
+  }, [adding, selected, myPrice, myCovers]);
 
   return (
     <div className="space-y-4">
@@ -447,47 +462,33 @@ export default function SearchPage() {
           <div className="text-lg font-semibold">{selected.name}</div>
           <div className="text-sm text-[var(--hr-muted)]">{selected.address}</div>
 
-          {selected.lat && selected.lng && (
-            <a
-              href={`https://www.google.com/maps/search/?api=1&query=${selected.lat},${selected.lng}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block"
-            >
-              <div className="relative w-full h-28 sm:h-32 overflow-hidden rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)]">
-                <iframe
-                  title="map"
-                  className="absolute inset-0 w-full h-full"
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                  src={`https://www.google.com/maps?q=${selected.lat},${selected.lng}&z=15&output=embed`}
-                />
-              </div>
-            </a>
-          )}
+          {/* ✅ Prix + Couverts (obligatoires) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Prix (€)</label>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                placeholder="ex: 25"
+                value={myPrice}
+                onChange={(e) => setMyPrice(e.target.value)}
+                className="w-full border border-[var(--hr-sand)] p-3 rounded-2xl bg-[var(--hr-surface)]"
+              />
+            </div>
 
-          <div className="flex items-center gap-2 text-sm text-[var(--hr-muted)]">
-            <span>⭐ {selected.ratingGoogle ?? "—"}</span>
-            {selected.userRatingCount ? <span>({selected.userRatingCount})</span> : null}
-            {selected.primaryType ? (
-              <span className="ml-auto px-2 py-1 rounded-full border border-[var(--hr-sand)] text-[var(--hr-ink)] bg-[var(--hr-surface)] text-xs">
-                {selected.primaryType}
-              </span>
-            ) : null}
-          </div>
-
-          {/* Prix visite */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Prix de cette visite (€)</label>
-            <input
-              type="number"
-              min={0}
-              step={0.5}
-              placeholder="ex: 25"
-              value={myPrice}
-              onChange={(e) => setMyPrice(e.target.value)}
-              className="w-full border border-[var(--hr-sand)] p-3 rounded-2xl bg-[var(--hr-surface)]"
-            />
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Couverts</label>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                placeholder="ex: 2"
+                value={myCovers}
+                onChange={(e) => setMyCovers(e.target.value)}
+                className="w-full border border-[var(--hr-sand)] p-3 rounded-2xl bg-[var(--hr-surface)]"
+              />
+            </div>
           </div>
 
           {/* Nouveau resto : note + tags */}
@@ -509,8 +510,6 @@ export default function SearchPage() {
 
               <div className="space-y-2">
                 <div className="text-sm font-medium">Tes tags</div>
-
-                {/* ✅ anti-coupure chips tags */}
                 <div className="-mx-4 px-4">
                   <div className="flex gap-2 overflow-x-auto pb-2 pt-1 pr-2">
                     {AVAILABLE_TAGS.map((tag) => {
@@ -523,7 +522,7 @@ export default function SearchPage() {
                           className={`whitespace-nowrap px-3 py-2 rounded-full text-sm border transition active:scale-[0.98] ${
                             isSelected
                               ? "bg-[var(--hr-accent)] text-[var(--hr-cream)] border-[var(--hr-accent)]"
-                              : "bg-[var(--hr-surface)]/60 text-[var(--hr-muted)] border-[var(--hr-sand)]/70 hover:bg-[var(--hr-sand)]/15"
+                              : "bg-[var(--hr-surface)]/60 text-[var(--hr-muted)] border border-[var(--hr-sand)]/70 hover:bg-[var(--hr-sand)]/15"
                           }`}
                         >
                           #{tag}
@@ -541,7 +540,6 @@ export default function SearchPage() {
             onClick={async () => {
               setAdding(true);
               setMsg(null);
-
               try {
                 if (alreadyAdded && existingRestaurantId) {
                   await addVisitOnly(existingRestaurantId);

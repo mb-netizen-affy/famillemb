@@ -15,6 +15,7 @@ type VisitRow = {
   restaurant_id: string;
   price_eur: number | null;
   visited_at: string;
+  covers: number; // ✅ NEW
 };
 
 function formatEUR(v: number) {
@@ -133,7 +134,7 @@ export default function StatsPage() {
 
     const { data: v, error: vErr } = await supabase
       .from("restaurant_visits")
-      .select("id,user_id,restaurant_id,price_eur,visited_at")
+      .select("id,user_id,restaurant_id,price_eur,visited_at,covers") // ✅ NEW
       .eq("user_id", user.id);
 
     if (vErr) console.error("Erreur visits:", vErr.message);
@@ -159,12 +160,11 @@ export default function StatsPage() {
   }, [visits]);
 
   useEffect(() => {
-  // On veut TOUJOURS commencer sur "Tout".
-  if (yearFilter !== "all" && !availableYears.includes(yearFilter)) {
-    setYearFilter("all");
-  }
-}, [availableYears, yearFilter]);
-
+    // On veut TOUJOURS commencer sur "Tout".
+    if (yearFilter !== "all" && !availableYears.includes(yearFilter)) {
+      setYearFilter("all");
+    }
+  }, [availableYears, yearFilter]);
 
   const chipBase =
     "px-3 py-2 rounded-full text-sm font-semibold transition active:scale-[0.98] " +
@@ -259,16 +259,57 @@ export default function StatsPage() {
     const visitsCountByRestaurant = new Map<string, number>();
     const monthCount = new Map<string, number>();
 
+    // ✅ NEW: stats per cover
+    let totalCovers = 0;
+
+    let bestPerCover:
+      | { restaurantName: string; unit: number; price: number; covers: number; visited_at: string }
+      | null = null;
+
+    let worstPerCover:
+      | { restaurantName: string; unit: number; price: number; covers: number; visited_at: string }
+      | null = null;
+
     for (const v of visitsFiltered) {
       const price = v.price_eur == null ? null : Number(v.price_eur);
+      const covers = Number((v as any).covers ?? 0);
+
+      if (covers > 0 && Number.isFinite(covers)) totalCovers += covers;
+
       if (price != null && Number.isFinite(price)) {
         totalSpent += price;
+
         if (!priciestVisit || price > priciestVisit.price) {
           priciestVisit = {
             restaurantName: restoNameById.get(v.restaurant_id) ?? "—",
             price,
             visited_at: v.visited_at,
           };
+        }
+
+        // ✅ per cover only if covers ok
+        if (covers > 0 && Number.isFinite(covers)) {
+          const unit = price / covers;
+
+          if (!bestPerCover || unit < bestPerCover.unit) {
+            bestPerCover = {
+              restaurantName: restoNameById.get(v.restaurant_id) ?? "—",
+              unit,
+              price,
+              covers,
+              visited_at: v.visited_at,
+            };
+          }
+
+          if (!worstPerCover || unit > worstPerCover.unit) {
+            worstPerCover = {
+              restaurantName: restoNameById.get(v.restaurant_id) ?? "—",
+              unit,
+              price,
+              covers,
+              visited_at: v.visited_at,
+            };
+          }
         }
       }
 
@@ -298,15 +339,22 @@ export default function StatsPage() {
     const visitCount = visitsFiltered.length;
     const avgPerVisit = visitCount > 0 ? totalSpent / visitCount : null;
 
+    const avgPerCover =
+      totalCovers > 0 ? Math.round((totalSpent / totalCovers) * 10) / 10 : null;
+
     return {
       totalRestaurants,
       visitCount,
+      totalCovers, // ✅ NEW
       avg: Math.round(avg * 10) / 10,
       best,
       worst,
       topCity,
       totalSpent: Math.round(totalSpent * 10) / 10,
       avgPerVisit: avgPerVisit == null ? null : Math.round(avgPerVisit * 10) / 10,
+      avgPerCover, // ✅ NEW
+      bestPerCover, // ✅ NEW
+      worstPerCover, // ✅ NEW
       priciestVisit,
       mostVisited,
       mostActiveMonth,
@@ -376,7 +424,6 @@ export default function StatsPage() {
             <p className="text-sm font-semibold">Année</p>
           </div>
 
-          {/* ✅ wrapper anti-coupure (iOS) */}
           <div className="-mx-4 px-4">
             <div className="flex gap-2 overflow-x-auto pb-2 pt-1 pr-2">
               <button
@@ -402,7 +449,6 @@ export default function StatsPage() {
             </div>
           </div>
 
-          {/* ✅ compare plus clair */}
           {compare && yearFilter !== "all" ? (
             <div className="text-xs text-[var(--hr-muted)] flex items-center justify-between gap-3">
               <span>Comparaison vs {compare.prevYear}</span>
@@ -445,6 +491,11 @@ export default function StatsPage() {
                 value={String(stats.visitCount)}
                 sub={stats.avgPerVisit == null ? undefined : `~ ${formatEUR(stats.avgPerVisit)} / visite`}
               />
+
+              {/* ✅ NEW */}
+              <StatCard title="Couverts" value={String(stats.totalCovers)} />
+              <StatCard title="€/couvert" value={stats.avgPerCover == null ? "—" : formatEUR(stats.avgPerCover)} />
+
               <StatCard title="Moyenne" value={`${stats.avg}/20`} />
               <StatCard title="Total dépensé" value={formatEUR(stats.totalSpent)} />
             </section>
@@ -482,6 +533,31 @@ export default function StatsPage() {
                   stats.priciestVisit
                     ? `${formatEUR(stats.priciestVisit.price)} · ${formatDateFR(stats.priciestVisit.visited_at)}`
                     : "Aucune visite avec prix"
+                }
+              />
+
+              {/* ✅ NEW per cover cards */}
+              <InsightCard
+                title="🥗 Meilleur prix par couvert"
+                main={stats.bestPerCover ? stats.bestPerCover.restaurantName : "—"}
+                sub={
+                  stats.bestPerCover
+                    ? `${formatEUR(Math.round(stats.bestPerCover.unit * 10) / 10)} / couvert · ${
+                        stats.bestPerCover.covers
+                      } couverts · ${formatDateFR(stats.bestPerCover.visited_at)}`
+                    : "Aucune visite exploitable"
+                }
+              />
+
+              <InsightCard
+                title="🦞 Plus cher par couvert"
+                main={stats.worstPerCover ? stats.worstPerCover.restaurantName : "—"}
+                sub={
+                  stats.worstPerCover
+                    ? `${formatEUR(Math.round(stats.worstPerCover.unit * 10) / 10)} / couvert · ${
+                        stats.worstPerCover.covers
+                      } couverts · ${formatDateFR(stats.worstPerCover.visited_at)}`
+                    : "Aucune visite exploitable"
                 }
               />
             </section>
@@ -533,6 +609,11 @@ export default function StatsPage() {
               <p className="text-xs text-[var(--hr-muted)]">
                 Le filtre année se base sur tes <span className="font-medium text-[var(--hr-ink)]">visites</span>,
                 pas la date de création du resto.
+              </p>
+
+              <p className="text-xs text-[var(--hr-muted)]">
+                <span className="font-medium text-[var(--hr-ink)]">€/couvert</span> = total dépensé ÷ total couverts (sur
+                la période filtrée).
               </p>
             </section>
           </>
