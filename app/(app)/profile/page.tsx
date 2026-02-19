@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 
@@ -51,6 +51,16 @@ export default function ProfilePage() {
   // ✅ switch public/privé
   const [savingPrivacy, setSavingPrivacy] = useState(false);
 
+  // ✅ toast (pour partage)
+  const toastTimerRef = useRef<number | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const pushToast = (t: string) => {
+    setToast(t);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2000);
+  };
+
   const loadProfile = async () => {
     const { data } = await supabase.auth.getUser();
     const user = data.user;
@@ -93,6 +103,10 @@ export default function ProfilePage() {
       setLoading(false);
     };
     init();
+
+    return () => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -185,6 +199,56 @@ export default function ProfilePage() {
     setMsg(next ? "✅ Ton compte est maintenant public" : "✅ Ton compte est maintenant privé");
   };
 
+  const shareMyProfile = async () => {
+  if (!userId) return;
+
+  if (!profile.is_public) {
+    pushToast("Active le mode public pour partager ton profil.");
+    return;
+  }
+
+  const url = `${window.location.origin}/p/${userId}`;
+  const title = "Mon profil resto";
+  const text = "Viens voir mes stats & restos 🍴";
+
+  try {
+    // ✅ Partage natif (mobile)
+    if (navigator.share) {
+      await navigator.share({ title, text, url });
+      pushToast("✅ Partagé !");
+      return;
+    }
+
+    // ✅ Fallback copie
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+      pushToast("✅ Lien copié !");
+      return;
+    }
+
+    // ✅ Fallback “old school”
+    const ta = document.createElement("textarea");
+    ta.value = url;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+
+    pushToast("✅ Lien copié !");
+  } catch (e: any) {
+    // Si l’utilisateur annule le share, iOS/Android renvoie souvent une erreur -> on ignore
+    const msg = String(e?.message ?? e ?? "");
+    if (msg.toLowerCase().includes("abort") || msg.toLowerCase().includes("canceled")) return;
+
+    pushToast("❌ Impossible de partager le lien.");
+  }
+};
+
+
   if (loading) {
     return (
       <main className="min-h-screen bg-[var(--hr-cream)] text-[var(--hr-ink)] px-4 py-10 pb-28">
@@ -205,6 +269,15 @@ export default function ProfilePage() {
 
   return (
     <main className="min-h-screen bg-[var(--hr-cream)] text-[var(--hr-ink)] px-4 py-10 pb-28">
+      {/* ✅ Toast */}
+      {toast ? (
+        <div className="fixed top-16 left-4 right-4 z-50">
+          <div className="mx-auto max-w-md bg-[var(--hr-ink)] text-[var(--hr-cream)] px-4 py-3 rounded-2xl shadow">
+            {toast}
+          </div>
+        </div>
+      ) : null}
+
       <div className="max-w-md mx-auto space-y-5">
         <header className="space-y-1">
           <h1 className="text-xl font-bold">👤 Profil</h1>
@@ -218,7 +291,7 @@ export default function ProfilePage() {
               <p className="text-sm font-semibold text-[var(--hr-ink)]">Compte public</p>
               <p className="text-xs text-[var(--hr-muted)] mt-1">
                 {profile.is_public
-                  ? "Visible via un lien public (à venir)."
+                  ? "Visible via un lien public."
                   : "Seulement toi peux voir ton carnet."}
               </p>
             </div>
@@ -231,12 +304,8 @@ export default function ProfilePage() {
             />
           </div>
 
-          {savingPrivacy ? (
-            <p className="text-xs text-[var(--hr-muted)] mt-3">Sauvegarde…</p>
-          ) : null}
+          {savingPrivacy ? <p className="text-xs text-[var(--hr-muted)] mt-3">Sauvegarde…</p> : null}
         </section>
-
-        
 
         {/* Bloc compte */}
         <section className="bg-[var(--hr-surface)] border border-[var(--hr-sand)] rounded-2xl p-4 shadow-sm">
@@ -342,25 +411,20 @@ export default function ProfilePage() {
           </div>
         </section>
 
-        {/* Partage du compte*/}
+        {/* ✅ Partager mon profil */}
         {profile.is_public ? (
-  <button
-    type="button"
-    onClick={async () => {
-      const url = `${window.location.origin}/p/${userId}`;
-      await navigator.clipboard.writeText(url);
-      setMsg("✅ Lien copié dans le presse-papiers");
-    }}
-    className="mt-3 w-full py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99]"
-  >
-    🔗 Copier mon lien public
-  </button>
-) : (
-  <p className="text-xs text-[var(--hr-muted)] mt-3">
-    Active le mode public pour générer un lien partageable.
-  </p>
-)}
-
+          <button
+            type="button"
+            onClick={shareMyProfile}
+            className="w-full py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold active:scale-[0.99]"
+          >
+            🔗 Partager mon profil
+          </button>
+        ) : (
+          <p className="text-xs text-[var(--hr-muted)]">
+            Active le mode public pour générer un lien partageable.
+          </p>
+        )}
 
         {/* Déconnexion */}
         <button
@@ -398,7 +462,7 @@ function Switch({
   disabled?: boolean;
   label?: string;
 }) {
-  return ( 
+  return (
     <button
       type="button"
       role="switch"
@@ -413,16 +477,10 @@ function Switch({
       title={checked ? "Compte public" : "Compte privé"}
     >
       {label ? (
-        <span className="text-xs font-semibold text-[var(--hr-ink)] w-12 text-center">
-          {label}
-        </span>
+        <span className="text-xs font-semibold text-[var(--hr-ink)] w-12 text-center">{label}</span>
       ) : null}
 
-      <span
-        className={`relative inline-flex w-12 h-7 rounded-full transition ${
-          checked ? "bg-[var(--hr-accent)]" : "bg-[var(--hr-sand)]"
-        }`}
-      >
+      <span className={`relative inline-flex w-12 h-7 rounded-full transition ${checked ? "bg-[var(--hr-accent)]" : "bg-[var(--hr-sand)]"}`}>
         <span
           className={`absolute top-0.5 w-6 h-6 rounded-full bg-[var(--hr-cream)] shadow-sm transition-transform ${
             checked ? "translate-x-[22px]" : "translate-x-0.5"

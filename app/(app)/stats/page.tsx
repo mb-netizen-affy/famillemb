@@ -15,7 +15,7 @@ type VisitRow = {
   restaurant_id: string;
   price_eur: number | null;
   visited_at: string;
-  covers: number; // ✅ NEW
+  covers: number;
 };
 
 function formatEUR(v: number) {
@@ -39,6 +39,41 @@ function monthKeyFR(iso: string) {
   const y = d.getFullYear();
   const m = d.toLocaleDateString("fr-FR", { month: "long" });
   return `${m} ${y}`;
+}
+
+function norm(s: string) {
+  return (s ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function initials(name: string) {
+  const parts = name
+    .split(" ")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const a = parts[0]?.[0] ?? "U";
+  const b = parts[1]?.[0] ?? "";
+  return (a + b).toUpperCase();
+}
+
+function Pill({
+  children,
+  tone = "neutral",
+}: {
+  children: React.ReactNode;
+  tone?: "neutral" | "accent" | "muted";
+}) {
+  const base = "inline-flex items-center px-3 py-1 rounded-full border text-xs font-semibold whitespace-nowrap";
+  const cls =
+    tone === "accent"
+      ? "border-[var(--hr-accent)] bg-[var(--hr-accent)] text-[var(--hr-cream)]"
+      : tone === "muted"
+      ? "border-[var(--hr-sand)] bg-[var(--hr-sand)]/20 text-[var(--hr-muted)]"
+      : "border-[var(--hr-sand)] bg-[var(--hr-surface)] text-[var(--hr-ink)]";
+  return <span className={`${base} ${cls}`}>{children}</span>;
 }
 
 function InsightCard({
@@ -95,6 +130,38 @@ function DeltaPill({ value }: { value: number }) {
   );
 }
 
+function badgeFromTopTags(topTags: { tag: string; n: number }[], stats: { avg: number; visitCount: number; avgPerCover: number | null }) {
+  const tags = topTags.map((t) => norm(t.tag));
+
+  const hasExact = (label: string) => tags.includes(norm(label));
+  const hasAny = (labels: string[]) => labels.some((l) => hasExact(l));
+
+  // Cuisine
+  if (hasExact("Japonais") || hasExact("Asiatique")) return { label: "🍣 Addict d’Asie", sub: "Cuisine favorite" };
+  if (hasExact("Italien")) return { label: "🍕 Italien dans l’âme", sub: "Cuisine favorite" };
+  if (hasExact("Français")) return { label: "🥖 Tradition française", sub: "Cuisine favorite" };
+  if (hasExact("Indien")) return { label: "🍛 Épicé & curieux", sub: "Cuisine favorite" };
+  if (hasAny(["Oriental", "Méditerranéen"])) return { label: "🫒 Soleil en bouche", sub: "Cuisine favorite" };
+  if (hasExact("Mexicain")) return { label: "🌮 Team Mexique", sub: "Cuisine favorite" };
+  if (hasExact("Américain")) return { label: "🍔 US vibes", sub: "Cuisine favorite" };
+
+  // Concepts / Ambiance / Régime
+  if (hasExact("Gastronomique")) return { label: "💎 Fine dining", sub: "Plutôt gastro" };
+  if (hasAny(["Bistrot", "Brunch"])) return { label: "☕ Bistrot lover", sub: "Confort food" };
+  if (hasAny(["Street food", "Fast-food"])) return { label: "🚀 Street-food lover", sub: "Rapide & bon" };
+  if (hasExact("Tapas / Partage")) return { label: "🍷 Partageur", sub: "Tapas & convivialité" };
+  if (hasExact("Vegan")) return { label: "🥗 Vegan mood", sub: "Green vibes" };
+  if (hasExact("Romantique")) return { label: "🌹 Romantique", sub: "Ambiance favorite" };
+  if (hasExact("Familial")) return { label: "👨‍👩‍👧‍👦 Family friendly", sub: "Ambiance favorite" };
+
+  // Fallback “comportement”
+  if (stats.visitCount >= 30) return { label: "🔥 Gros mangeur", sub: "Beaucoup de visites" };
+  if (stats.avg >= 16) return { label: "⭐ Exigeant", sub: "Notes élevées" };
+  if (stats.avgPerCover != null && stats.avgPerCover >= 30) return { label: "💸 Grand seigneur", sub: "Panier / couvert élevé" };
+
+  return { label: "🍽️ Gourmand curieux", sub: "Toujours en exploration" };
+}
+
 export default function StatsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -114,6 +181,9 @@ export default function StatsPage() {
 
   const [yearFilter, setYearFilter] = useState<number | "all">("all");
 
+  // petit affichage hero : nom
+  const [displayName, setDisplayName] = useState<string>("Mon carnet");
+
   const loadStats = async () => {
     const { data } = await supabase.auth.getUser();
     const user = data.user;
@@ -122,6 +192,16 @@ export default function StatsPage() {
       router.replace("/login");
       return;
     }
+
+    // nom pour le hero
+    const { data: p } = await supabase
+      .from("profiles")
+      .select("name,last_name")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    const dn = `${(p as any)?.name ?? ""} ${(p as any)?.last_name ?? ""}`.trim();
+    setDisplayName(dn || "Mon carnet");
 
     const { data: restos, error: rErr } = await supabase
       .from("restaurants")
@@ -134,7 +214,7 @@ export default function StatsPage() {
 
     const { data: v, error: vErr } = await supabase
       .from("restaurant_visits")
-      .select("id,user_id,restaurant_id,price_eur,visited_at,covers") // ✅ NEW
+      .select("id,user_id,restaurant_id,price_eur,visited_at,covers")
       .eq("user_id", user.id);
 
     if (vErr) console.error("Erreur visits:", vErr.message);
@@ -160,7 +240,6 @@ export default function StatsPage() {
   }, [visits]);
 
   useEffect(() => {
-    // On veut TOUJOURS commencer sur "Tout".
     if (yearFilter !== "all" && !availableYears.includes(yearFilter)) {
       setYearFilter("all");
     }
@@ -210,11 +289,13 @@ export default function StatsPage() {
     const best = validRatings.length ? Math.max(...validRatings) : null;
     const worst = validRatings.length ? Math.min(...validRatings) : null;
 
-    // ✅ Top tags limité à 3
+    // Top tags
     const tagsCount = new Map<string, number>();
     for (const r of restaurantsFiltered as any) {
       for (const t of (r.tags ?? []) as string[]) {
-        tagsCount.set(t, (tagsCount.get(t) ?? 0) + 1);
+        const key = String(t ?? "").trim();
+        if (!key) continue;
+        tagsCount.set(key, (tagsCount.get(key) ?? 0) + 1);
       }
     }
     const topTags = Array.from(tagsCount.entries())
@@ -230,17 +311,18 @@ export default function StatsPage() {
       cityCount.set(c, (cityCount.get(c) ?? 0) + 1);
     }
     const topCity =
-      cityCount.size === 0
-        ? "—"
-        : Array.from(cityCount.entries()).sort((a, b) => b[1] - a[1])[0][0];
+      cityCount.size === 0 ? "—" : Array.from(cityCount.entries()).sort((a, b) => b[1] - a[1])[0][0];
 
-    // Pays
+    // Pays #1 + liste
     const countryCount = new Map<string, number>();
     for (const r of restaurantsFiltered as any) {
       const c = String((r.country ?? "")).trim();
       if (!c) continue;
       countryCount.set(c, (countryCount.get(c) ?? 0) + 1);
     }
+    const topCountry =
+      countryCount.size === 0 ? "—" : Array.from(countryCount.entries()).sort((a, b) => b[1] - a[1])[0][0];
+
     const countries = Array.from(countryCount.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10);
@@ -252,6 +334,8 @@ export default function StatsPage() {
     }
 
     let totalSpent = 0;
+    let totalCovers = 0;
+
     let priciestVisit:
       | { restaurantName: string; price: number; visited_at: string }
       | null = null;
@@ -259,20 +343,17 @@ export default function StatsPage() {
     const visitsCountByRestaurant = new Map<string, number>();
     const monthCount = new Map<string, number>();
 
-    // ✅ NEW: stats per cover
-    let totalCovers = 0;
-
     let bestPerCover:
-      | { restaurantName: string; unit: number; price: number; covers: number; visited_at: string }
+      | { restaurantName: string; unit: number; covers: number; visited_at: string }
       | null = null;
 
     let worstPerCover:
-      | { restaurantName: string; unit: number; price: number; covers: number; visited_at: string }
+      | { restaurantName: string; unit: number; covers: number; visited_at: string }
       | null = null;
 
     for (const v of visitsFiltered) {
       const price = v.price_eur == null ? null : Number(v.price_eur);
-      const covers = Number((v as any).covers ?? 0);
+      const covers = Number(v.covers ?? 0);
 
       if (covers > 0 && Number.isFinite(covers)) totalCovers += covers;
 
@@ -287,7 +368,6 @@ export default function StatsPage() {
           };
         }
 
-        // ✅ per cover only if covers ok
         if (covers > 0 && Number.isFinite(covers)) {
           const unit = price / covers;
 
@@ -295,7 +375,6 @@ export default function StatsPage() {
             bestPerCover = {
               restaurantName: restoNameById.get(v.restaurant_id) ?? "—",
               unit,
-              price,
               covers,
               visited_at: v.visited_at,
             };
@@ -305,7 +384,6 @@ export default function StatsPage() {
             worstPerCover = {
               restaurantName: restoNameById.get(v.restaurant_id) ?? "—",
               unit,
-              price,
               covers,
               visited_at: v.visited_at,
             };
@@ -313,10 +391,7 @@ export default function StatsPage() {
         }
       }
 
-      visitsCountByRestaurant.set(
-        v.restaurant_id,
-        (visitsCountByRestaurant.get(v.restaurant_id) ?? 0) + 1
-      );
+      visitsCountByRestaurant.set(v.restaurant_id, (visitsCountByRestaurant.get(v.restaurant_id) ?? 0) + 1);
 
       const mk = monthKeyFR(v.visited_at);
       monthCount.set(mk, (monthCount.get(mk) ?? 0) + 1);
@@ -339,22 +414,22 @@ export default function StatsPage() {
     const visitCount = visitsFiltered.length;
     const avgPerVisit = visitCount > 0 ? totalSpent / visitCount : null;
 
-    const avgPerCover =
-      totalCovers > 0 ? Math.round((totalSpent / totalCovers) * 10) / 10 : null;
+    const avgPerCover = totalCovers > 0 ? Math.round((totalSpent / totalCovers) * 10) / 10 : null;
 
     return {
       totalRestaurants,
       visitCount,
-      totalCovers, // ✅ NEW
+      totalCovers,
       avg: Math.round(avg * 10) / 10,
       best,
       worst,
       topCity,
+      topCountry,
       totalSpent: Math.round(totalSpent * 10) / 10,
       avgPerVisit: avgPerVisit == null ? null : Math.round(avgPerVisit * 10) / 10,
-      avgPerCover, // ✅ NEW
-      bestPerCover, // ✅ NEW
-      worstPerCover, // ✅ NEW
+      avgPerCover,
+      bestPerCover,
+      worstPerCover,
       priciestVisit,
       mostVisited,
       mostActiveMonth,
@@ -363,7 +438,15 @@ export default function StatsPage() {
     };
   }, [restaurants, restaurantsFiltered, visitsFiltered]);
 
-  // Compare vs année précédente (quand une année est sélectionnée)
+  const gourmetBadge = useMemo(() => {
+    return badgeFromTopTags(stats.topTags, {
+      avg: stats.avg,
+      visitCount: stats.visitCount,
+      avgPerCover: stats.avgPerCover,
+    });
+  }, [stats.topTags, stats.avg, stats.visitCount, stats.avgPerCover]);
+
+  // Compare vs année précédente
   const compare = useMemo(() => {
     if (yearFilter === "all") return null;
     const prevYear = yearFilter - 1;
@@ -390,13 +473,13 @@ export default function StatsPage() {
       spentDelta: deltaPct(stats.totalSpent, prevSpent),
       visitsDelta: deltaPct(stats.visitCount, prevVisitCount),
     };
-  }, [yearFilter, availableYears, visits, stats]);
+  }, [yearFilter, availableYears, visits, stats.totalSpent, stats.visitCount]);
 
   if (loading) {
     return (
       <main className="min-h-screen bg-[var(--hr-cream)] text-[var(--hr-ink)] px-4 py-10 pb-28">
         <div className="max-w-md mx-auto space-y-5">
-          <div className="h-7 w-28 rounded-xl bg-[var(--hr-sand)]/40" />
+          <div className="h-20 rounded-3xl bg-[var(--hr-sand)]/35" />
           <div className="grid grid-cols-2 gap-3">
             <div className="h-24 rounded-2xl bg-[var(--hr-sand)]/40" />
             <div className="h-24 rounded-2xl bg-[var(--hr-sand)]/40" />
@@ -414,9 +497,45 @@ export default function StatsPage() {
   return (
     <main className="min-h-screen bg-[var(--hr-cream)] text-[var(--hr-ink)] px-4 py-10 pb-28">
       <div className="max-w-md mx-auto space-y-5">
-        <header className="space-y-1">
-          <h1 className="text-xl font-bold">📊 Stats</h1>
-        </header>
+        {/* HERO */}
+        <section className="bg-[var(--hr-surface)] border border-[var(--hr-sand)] rounded-3xl p-5 shadow-sm">
+          <div className="flex items-start gap-4">
+            <div className="w-14 h-14 rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-sand)]/20 flex items-center justify-center text-lg font-bold">
+              {initials(displayName)}
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h1 className="text-lg font-bold truncate">{displayName}</h1>
+                  <p className="text-sm text-[var(--hr-muted)] truncate">
+                    Tes stats · {stats.totalRestaurants} restos · {stats.visitCount} visites
+                  </p>
+                </div>
+
+                <div className="flex flex-col items-end gap-2 shrink-0">
+                  <Pill tone="accent">📊 Stats</Pill>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Pill tone="neutral">{gourmetBadge.label}</Pill>
+                {stats.topCity !== "—" ? <Pill tone="muted">📍 {stats.topCity}</Pill> : null}
+                {stats.topCountry !== "—" ? <Pill tone="muted">🌍 {stats.topCountry}</Pill> : null}
+                {stats.topTags.length ? (
+                  <Pill tone="muted">
+                    🏷️ {stats.topTags.map((t) => t.tag).slice(0, 2).join(" · ")}
+                    {stats.topTags.length > 2 ? " · +" : ""}
+                  </Pill>
+                ) : null}
+              </div>
+
+              {gourmetBadge.sub ? (
+                <p className="mt-3 text-xs text-[var(--hr-muted)]">{gourmetBadge.sub}</p>
+              ) : null}
+            </div>
+          </div>
+        </section>
 
         {/* Année */}
         <section className="space-y-2">
@@ -492,7 +611,6 @@ export default function StatsPage() {
                 sub={stats.avgPerVisit == null ? undefined : `~ ${formatEUR(stats.avgPerVisit)} / visite`}
               />
 
-              {/* ✅ NEW */}
               <StatCard title="Couverts" value={String(stats.totalCovers)} />
               <StatCard title="€/couvert" value={stats.avgPerCover == null ? "—" : formatEUR(stats.avgPerCover)} />
 
@@ -536,7 +654,6 @@ export default function StatsPage() {
                 }
               />
 
-              {/* ✅ NEW per cover cards */}
               <InsightCard
                 title="🥗 Meilleur prix par couvert"
                 main={stats.bestPerCover ? stats.bestPerCover.restaurantName : "—"}
@@ -607,8 +724,8 @@ export default function StatsPage() {
               </div>
 
               <p className="text-xs text-[var(--hr-muted)]">
-                Le filtre année se base sur tes <span className="font-medium text-[var(--hr-ink)]">visites</span>,
-                pas la date de création du resto.
+                Le filtre année se base sur tes <span className="font-medium text-[var(--hr-ink)]">visites</span>, pas la
+                date de création du resto.
               </p>
 
               <p className="text-xs text-[var(--hr-muted)]">
@@ -627,7 +744,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-3">
       <span className="text-sm text-[var(--hr-muted)]">{label}</span>
-      <span className="text-sm font-semibold text-right">{value}</span>
+      <span className="text-sm font-semibold text-right text-[var(--hr-ink)]">{value}</span>
     </div>
   );
 }

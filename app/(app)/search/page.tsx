@@ -114,7 +114,7 @@ export default function SearchPage() {
     setMyRating("");
     setMyTags([]);
     setMyPrice("");
-    setMyCovers("2"); // ✅ reset couverts
+    setMyCovers("2");
     setAlreadyAdded(false);
     setExistingRestaurantId(null);
   };
@@ -264,7 +264,7 @@ export default function SearchPage() {
         user_id: userId,
         restaurant_id: restaurantId,
         price_eur: v.price,
-        covers: v.covers, // ✅
+        covers: v.covers,
         visited_at: nowISOStable(),
       },
     ]);
@@ -335,7 +335,7 @@ export default function SearchPage() {
         user_id: userId,
         restaurant_id: restaurantId,
         price_eur: v.price,
-        covers: v.covers, // ✅
+        covers: v.covers,
         visited_at: nowISOStable(),
       },
     ]);
@@ -442,9 +442,7 @@ export default function SearchPage() {
                             p.text
                           )}
                         </div>
-                        <div className="text-xs text-[var(--hr-muted)] truncate">
-                          Appuie pour voir les détails
-                        </div>
+                        <div className="text-xs text-[var(--hr-muted)] truncate">Appuie pour voir les détails</div>
                       </div>
 
                       <div className="text-[var(--hr-muted)] mt-1">›</div>
@@ -461,6 +459,38 @@ export default function SearchPage() {
         <section className="bg-[var(--hr-surface)] border border-[var(--hr-sand)] rounded-2xl p-4 shadow-sm space-y-3">
           <div className="text-lg font-semibold">{selected.name}</div>
           <div className="text-sm text-[var(--hr-muted)]">{selected.address}</div>
+
+          {/* ✅ CARTE GOOGLE (tu l'avais supprimée) */}
+          {selected.lat != null && selected.lng != null && (
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${selected.lat},${selected.lng}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block"
+              title="Ouvrir dans Google Maps"
+            >
+              <div className="relative w-full h-28 sm:h-32 overflow-hidden rounded-2xl border border-[var(--hr-sand)] bg-[var(--hr-surface)]">
+                <iframe
+                  key={`${selected.lat}-${selected.lng}`} // ✅ force refresh si tu changes de resto
+                  title="map"
+                  className="absolute inset-0 w-full h-full"
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  src={`https://www.google.com/maps?q=${selected.lat},${selected.lng}&z=15&output=embed`}
+                />
+              </div>
+            </a>
+          )}
+
+          <div className="flex items-center gap-2 text-sm text-[var(--hr-muted)]">
+            <span>⭐ {selected.ratingGoogle ?? "—"}</span>
+            {selected.userRatingCount ? <span>({selected.userRatingCount})</span> : null}
+            {selected.primaryType ? (
+              <span className="ml-auto px-2 py-1 rounded-full border border-[var(--hr-sand)] text-[var(--hr-ink)] bg-[var(--hr-surface)] text-xs">
+                {selected.primaryType}
+              </span>
+            ) : null}
+          </div>
 
           {/* ✅ Prix + Couverts (obligatoires) */}
           <div className="grid grid-cols-2 gap-3">
@@ -552,7 +582,13 @@ export default function SearchPage() {
             }}
             className="w-full py-3 rounded-2xl bg-[var(--hr-accent)] text-[var(--hr-cream)] font-semibold disabled:opacity-60 active:scale-[0.99]"
           >
-            {alreadyAdded ? (adding ? "Ajout…" : "🍴 Ajouter une visite") : adding ? "Ajout…" : "Ajouter à mes restaurants"}
+            {alreadyAdded
+              ? adding
+                ? "Ajout…"
+                : "🍴 Ajouter une visite"
+              : adding
+              ? "Ajout…"
+              : "Ajouter à mes restaurants"}
           </button>
 
           {alreadyAdded && (
